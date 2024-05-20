@@ -1,53 +1,80 @@
-from datetime import datetime
+import sys
 import time
-from astropy.table import Table
+from pathlib import Path
+from importlib import import_module
+import timeit
+
 import numpy as np
+import pandas as pd
+from astropy.table import Table
 
-pRuntime = input("What runtime do you want to run the program on [CPU/GPU]")
-if pRuntime == "CPU":
-    import emlines_cpu as fit
-    paramTxt = "params_cpu.txt"
-    timeTxt = "time_cpu.txt"
-elif pRuntime == "GPU":
-    import emlines_gpu as fit
-    paramTxt = "params_gpu.txt"
-    timeTxt = "time_gpu.txt"
-else: 
-    print("This program only supports GPU and CPU runtime for now")
+data_path = Path("./data-5")
+#data_path = Path("./data-100")
+
+pRuntime = sys.argv[1]
+fit = import_module(f"emlines_{pRuntime}")
+
 # Reading the Model with all the emlines
-print('Reading emission line file.')
-t = Table.read('fastspec-emlines.ecsv')
-# trim to just the key optical lines
-t = t[12:34]
+t = Table.read(data_path / "fastspec-emlines.ecsv")
+line_wavelengths = t["restwave"].data
 
-linewaves = t['restwave'].data
+#Reading the metafile
+df = pd.read_csv(data_path / "fastspec-sample.txt",
+                 delimiter = " ",
+                 names = ["targetid", "redshift", "file"],
+                 dtype = {
+                     "targetid": str,
+                     "redshift": np.float64,
+                     "file": str
+                 })
 
-#Reading the metafile 
-targetids, redshifts, specfiles = np.genfromtxt('fastspec-sample.txt', dtype=None, encoding=None, unpack=True, skip_header=0)
-print(targetids, redshifts)
-targetids = np.atleast_1d(targetids)
-redshifts = np.atleast_1d(redshifts)
-specfiles = np.atleast_1d(specfiles)
+coldcache = True
 
+NTRIALS = 50
+totalTime = 0.
 
-totaltime = 0
-exec_arr = []
-#Calculating the time for each file to process
-for redshift, specfile in zip(redshifts, specfiles):
-    wave, flux, ivar, _ = np.loadtxt(specfile, unpack=True)
-    start_time = time.time()
-    bestamps, bestvshifts, bestsigmas = fit.emlines([wave, flux, ivar], linewaves, redshift)
-    end_time = time.time()
-    exec_time = end_time - start_time 
-    exec_arr.append(exec_time)
-    print("Execution time: " , exec_time , "seconds")
-    totaltime = totaltime + exec_time
-np.savetxt(timeTxt, exec_arr)
+with open(f"times-{pRuntime}.txt", "w") as times:
+    with open(f"results-{pRuntime}.txt", "w") as results:
+        print(f"Runtime: {pRuntime}", file=times)
+        print(f"Time of Execution: {time.ctime(time.time())}", file=times)
     
-print("Total Time:" , totaltime)
-
-
-params = np.column_stack((bestamps, bestvshifts, bestsigmas))
-np.savetxt(paramTxt , params, delimiter=" ")
-#Line-Spacing for the Next Experiment    
-
+        #Calculating the time for each file to process
+        for spectrum in df.itertuples(index=False):
+            
+            data = pd.read_csv(data_path / spectrum.file,
+                               delimiter = " ",
+                               names = ["wavelength", "flux", "ivar", "xxx"])
+            
+            if coldcache:
+                for i in range(10):
+                    # run once to warm up the cache and do any initial
+                    # driver loading
+                    fit.emlines(data["wavelength"].values,
+                                data["flux"].values,
+                                data["ivar"].values,
+                                spectrum.redshift,
+                                line_wavelengths)
+                coldcache = False
+            
+            s = timeit.timeit(lambda:
+                              fit.emlines(data["wavelength"].values,
+                                          data["flux"].values,
+                                          data["ivar"].values,
+                                          spectrum.redshift,
+                                          line_wavelengths),
+                              number = NTRIALS
+                              )
+        
+            print(f"Time: {s/NTRIALS:0.3f}s", file=times)
+            totalTime += s/NTRIALS
+            
+            fitted_amplitudes, fitted_vshift, fitted_sigma, objval = \
+                fit.emlines(data["wavelength"].values,
+                            data["flux"].values,
+                            data["ivar"].values,
+                            spectrum.redshift,
+                            line_wavelengths)
+            print(fitted_amplitudes, fitted_vshift, fitted_sigma, objval, file=results)
+        
+        print(f"Average time = {totalTime / df.shape[0]:.3f}", file=times)
+        

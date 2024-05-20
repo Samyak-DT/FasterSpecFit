@@ -1,0 +1,8 @@
+Runtime: gpu
+Time of Execution: Mon May 20 08:38:05 2024
+Time: 0.527s
+Time: 0.542s
+Time: 0.535s
+Time: 0.532s
+Time: 0.531s
+Average time = 0.533
