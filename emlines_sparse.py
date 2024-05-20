@@ -11,10 +11,14 @@ from scipy.optimize import least_squares
 
 from numba import jit
 
-# Do not bother computing normal PDF/CDF if more than this many SDEVs from
-# mean.
+# Do not bother computing normal PDF/CDF if more than this many 
+# standard deviations from mean.
 MAX_SDEV = 5.
 
+#
+# norm_pdf()
+# PDF of standard normal distribution at a point a
+#
 @jit(nopython=True, fastmath=True, nogil=True)
 def norm_pdf(a):
 
@@ -99,16 +103,17 @@ def build_emline_model(parameters,
     
     nbins = len(obs_bin_edges) - 1
     
+    # output per-bin fluxes
     # entry i corresponds bin i-1
     # entry 0 is a dummy in case lo == 0
     # last entry is a dummy in case hi == len(obs_bin_edges)
     model_fluxes = np.zeros(nbins + 2)
 
-    # create a temporary buffer for per-line calculations, sized large
+    # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
     max_width = int(2*MAX_SDEV*sigma / min(np.diff(log_obs_bin_edges))) + 4
     edge_vals = np.empty(max_width)  
-    
+
     # compute total area of all Gaussians inside each bin.
     # For each Gaussian, we only compute area contributions
     # for bins where it is non-negligible.
@@ -126,8 +131,8 @@ def build_emline_model(parameters,
         hi = np.searchsorted(log_obs_bin_edges,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
-
-        if hi == lo:  # Gaussian is outside bounds of obs_bin_edges
+        
+        if hi == lo:  # entire Gaussian is outside bounds of obs_bin_edges
             continue
         
         nedges = hi - lo + 2  # compute values at edges [lo - 1 ... hi]
@@ -159,10 +164,23 @@ def build_emline_model(parameters,
         
     # missing step -- apply the resolution matrix
     
-    # trim off left and right dummy values
+    # trim off left and right dummy values before returning
     return model_fluxes[1:-1]
 
 
+#
+# build_emline_model_jacobian() 
+#
+# Compute the Jacobian of the function computed in build_emlines_model().
+# Inputs are as for build_emlines_model(), except for
+#
+#  obs_weights -- weights for observations in each bin
+#
+# (passed here so that we can apply them sparsely).
+#
+# RETURNS:
+# Jacobian as a *dense* matrix (Numba does not support scipy.sparse)
+#
 @jit(nopython=True, fastmath=True, nogil=True)
 def build_emline_model_jacobian(parameters,
                                 obs_weights,
@@ -190,6 +208,8 @@ def build_emline_model_jacobian(parameters,
     
     nbins = len(obs_bin_edges) - 1
 
+    # output per-bin partial derivatives w/r to
+    #  line_amplitudes, line_vshift, and line_sigma
     # entry i of each row corresponds to bin i-1
     # entry 0 is a dummy in case lo == 0
     # last entry is a dummy in case hi == len(obs_bin_edges)
@@ -197,15 +217,16 @@ def build_emline_model_jacobian(parameters,
     ddv = np.zeros(nbins + 2)
     dds = np.zeros(nbins + 2)
 
-    # create a temporary buffer for per-line calculations, sized large
+    # temporary buffers for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
+    # We use dda's storage to compute those values in-place
     max_width = int(2*MAX_SDEV*sigma / min(np.diff(log_obs_bin_edges))) + 4
     ddv_vals = np.empty(max_width)
     dds_vals = np.empty(max_width)
     
-    # compute partial derivatives for total area of all Gaussians
-    # inside each bin. For each Gaussian, we only compute contributions
-    # for bins where it is non-negligible.
+    # compute partial derivatives for avg values of all Gaussians
+    # inside each bin. For each Gaussian, we only compute
+    # contributions for bins where it is non-negligible.
     for j in range(len(line_wavelengths)):
         
         shifted_line     = line_wavelengths[j] * line_shift
@@ -221,7 +242,7 @@ def build_emline_model_jacobian(parameters,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
         
-        if hi == lo:  # Gaussian is outside bounds of obs_bin_edges
+        if hi == lo:  # Gaussian is entirely outside bounds of obs_bin_edges
             continue
         
         nedges = hi - lo + 2 # compute values at edges [lo - 1 ... hi]
@@ -258,7 +279,7 @@ def build_emline_model_jacobian(parameters,
         dda_vals[nedges - 1] = c * line_shift * sigma     # edge hi
         ddv_vals[nedges - 1] = A * sigma
         dds_vals[nedges - 1] = A * line_shift * (1 + sigma**2)
-
+        
         # convert *_vals[i] to partial derivatives for bin i+lo-1 (last value
         # in each array is garbage)
         # we get values for bins lo-1 to hi-1 inclusive
@@ -274,16 +295,15 @@ def build_emline_model_jacobian(parameters,
     
     # missing step -- apply the resolution matrix
     
-    # trim off left and right dummy values from each row
+    # trim off left and right dummy values from each row before returning
     return np.column_stack((dda[:,1:-1].T, ddv[1:-1], dds[1:-1]))
     
 
 #
 # Jacobian of objective bjective function for least-squares
-# optimization.  Uses the same code structure as the model building
-# function.  Result is converted to a sparse matrix, since it is
-# extremely sparse, to speed up subsequent matrix-vector multiplies in
-# the optimizer.
+# optimization. The result of the detailed calculation is converted
+# to a sparse matrix, since it is extremely sparse, to speed up
+# subsequent matrix-vector multiplies in the optimizer.
 #
 # *args contains the fixed arguments to build_emline_model()
 # which are all used in the Jacobian calculation.
@@ -297,8 +317,8 @@ def _jacobian(parameters,
                                       obs_weights,
                                       *args)
     
-    # csc rep would be simpler, but csr
-    # is faster for matrix-vector multiply
+    # csc rep would be more compact, but csr is faster for
+    # matrix-vector multiply
     return sp.csr_array(jac)
 
     
@@ -353,7 +373,8 @@ def centers_to_edges(centers):
 # line_wavelengths: wavelengths of spectral lines being fit to data
 #
 # RETURNS:
-# fitted line amplitudes, fitted velocity shift, fitted width, objective value
+# fitted line amplitudes, fitted velocity shift, fitted width,
+# objective value
 #
 def emlines(obs_wavelengths,
             obs_fluxes,
