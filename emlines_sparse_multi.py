@@ -103,7 +103,7 @@ def build_emline_model(parameters,
 
     # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
-    max_width = int(2*MAX_SDEV*np.max(line_sigmas) / \
+    max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
     edge_vals = np.empty(max_width)  
 
@@ -212,7 +212,7 @@ def build_emline_model_jacobian(parameters,
     # inside each bin. For each Gaussian, we only compute
     # contributions for bins where it is non-negligible.
     for j in range(len(line_wavelengths)):
-
+        
         # line width
         sigma = line_sigmas[j] / C_LIGHT
         c0 = SQRT_2PI * np.exp(0.5 * sigma**2)
@@ -281,9 +281,9 @@ def build_emline_model_jacobian(parameters,
             ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * w[i+lo]
             dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * w[i+lo]
         
-            dda_vals[nedges - 1] = 0. # actual derivative for this bin
-            ddv_vals[nedges - 1] = 0. # actual derivative for this bin
-            dds_vals[nedges - 1] = 0. # actual derivative for this bin
+        dda_vals[nedges - 1] = 0. # actual derivative for this bin
+        ddv_vals[nedges - 1] = 0. # actual derivative for this bin
+        dds_vals[nedges - 1] = 0. # actual derivative for this bin
             
     # missing step -- apply the resolution matrix
     
@@ -312,7 +312,7 @@ def _jacobian(parameters,
     # csc rep would be more compact, but csr is faster for
     # matrix-vector multiply
     return sp.csr_array(jac)
-
+    #return jac
     
 #
 # Objective function for least-squares optimization Build the emline
@@ -321,7 +321,7 @@ def _jacobian(parameters,
 #
 # *args contains the fixed arguments to build_emline_model()
 #
-@jit(nopython=True, fastmath=False, nogil=True)
+#@jit(nopython=True, fastmath=False, nogil=True)
 def _objective(parameters,
                obs_fluxes,
                obs_weights,
