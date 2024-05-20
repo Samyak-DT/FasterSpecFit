@@ -56,13 +56,13 @@ Jaxopt 0.8.3 or later
 
 ## Usage <a name = "Usage"></a>
 
-> 'emlines_loop_execution impl'
+> `emlines_loop_execution impl`
 
-where 'impl' is the suffix of the implementation; e.g., to use
-'emlines_sparse.py', 'impl' should be 'sparse'.
+where `impl` is the suffix of the implementation; e.g., to use
+`emlines_sparse.py`, `impl` should be `sparse`.
 
 The script expects to find its data files (spectra, list of spectral
 lines, etc.) in a data subdirectory, whose name can be set near the
-top of the code. Output is written to files 'results-impl.py', while
-timings are written to 'times-impl.py'.  Timings use timeit and are
+top of the code. Output is written to files `results-impl.py`, while
+timings are written to `times-impl.py`.  Timings use timeit and are
 averaged over tens of runs for accuracy.
