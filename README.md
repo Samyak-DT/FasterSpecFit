@@ -34,6 +34,9 @@ The list of implementations includes:
 
 * emlines_sparse_multi.py -- sparse cpu_direct computation that
   learns a separate shift and width for each fitted line
+
+* emlines_sparse_custom.py -- improved version of sparse_multi that
+  builds and uses a custom linear operator for the Jacobian
   
 All the CPU implementations are accelerated with Numba, while the GPU
 implementations use JAX.

@@ -1,0 +1,8 @@
+Runtime: sparse_custom
+Time of Execution: Mon May 20 16:36:22 2024
+Time: 0.526s
+Time: 0.191s
+Time: 0.202s
+Time: 0.228s
+Time: 0.501s
+Average time = 0.330
