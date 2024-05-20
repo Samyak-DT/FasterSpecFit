@@ -67,8 +67,8 @@ def norm_cdf(a):
 #
 # INPUTS:
 #   line_amplitudes -- amplitudes for each fitted spectral line
-#   line_vshift     -- additional velocity shift common to all fitted lines
-#   line_sigma      -- width of Gaussian profile common to all fitted lines
+#   line_vshifts   -- additional velocity shift for each fitted lines
+#   line_sigmas    -- width of Gaussian profile for each fitted lines
 #
 #   obs_bin_edges     -- edges for observed spectral bins in ascending order
 #   log_obs_bin-edges -- natural log of values in obs_bin_edges
@@ -88,18 +88,10 @@ def build_emline_model(parameters,
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
     
-    line_amplitudes = parameters[:-2]
-    line_vshift     = parameters[-2]
-    line_sigma      = parameters[-1]
+    line_amplitudes, line_vshifts, line_sigmas = \
+        np.array_split(parameters, 3)
     
     ibin_width = np.hstack((np.array([0.]), 1/np.diff(obs_bin_edges)))
-    
-    # line width
-    sigma = line_sigma / C_LIGHT
-    c = SQRT_2PI * sigma * np.exp(0.5 * sigma**2)
-    
-    # wavelength shift for spectral lines
-    line_shift = 1. + redshift + line_vshift / C_LIGHT
     
     nbins = len(obs_bin_edges) - 1
     
@@ -111,14 +103,22 @@ def build_emline_model(parameters,
 
     # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
-    max_width = int(2*MAX_SDEV*sigma / np.min(np.diff(log_obs_bin_edges))) + 4
+    max_width = int(2*MAX_SDEV*np.max(line_sigmas) / \
+                    np.min(np.diff(log_obs_bin_edges))) + 4
     edge_vals = np.empty(max_width)  
 
     # compute total area of all Gaussians inside each bin.
     # For each Gaussian, we only compute area contributions
     # for bins where it is non-negligible.
     for j in range(len(line_wavelengths)):
-        
+
+        # line width
+        sigma = line_sigmas[j] / C_LIGHT
+        c = SQRT_2PI * sigma * np.exp(0.5 * sigma**2)
+    
+        # wavelength shift for spectral lines
+        line_shift = 1. + redshift + line_vshifts[j] / C_LIGHT
+    
         shifted_line     = line_wavelengths[j] * line_shift
         log_shifted_line = np.log(shifted_line)
         
@@ -192,43 +192,33 @@ def build_emline_model_jacobian(parameters,
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
     
-    line_amplitudes = parameters[:-2]
-    line_vshift     = parameters[-2]
-    line_sigma      = parameters[-1]
-    
+    line_amplitudes, line_vshifts, line_sigmas = \
+        np.array_split(parameters, 3)
+        
     w = np.hstack((np.array([0.]), obs_weights / np.diff(obs_bin_edges)))
-    
-    # line width
-    sigma = line_sigma / C_LIGHT
-    
-    # wavelength shift for spectral lines
-    line_shift = 1. + redshift + line_vshift / C_LIGHT
-    
-    c0 = SQRT_2PI * np.exp(0.5 * sigma**2)
     
     nbins = len(obs_bin_edges) - 1
 
     # output per-bin partial derivatives w/r to
-    #  line_amplitudes, line_vshift, and line_sigma
+    #  line_amplitudes, line_vshifts, and line_sigmas
     # entry i of each row corresponds to bin i-1
     # entry 0 is a dummy in case lo == 0
     # last entry is a dummy in case hi == len(obs_bin_edges)
     dda = np.zeros((len(line_wavelengths), nbins + 2))
-    ddv = np.zeros(nbins + 2)
-    dds = np.zeros(nbins + 2)
-
-    # temporary buffers for per-line calculations, sized large
-    # enough for whatever we may need to compute ([lo - 1 .. hi])
-    # We use dda's storage to compute those values in-place
-    max_width = int(2*MAX_SDEV*sigma / np.min(np.diff(log_obs_bin_edges))) + 4
-    ddv_vals = np.empty(max_width)
-    dds_vals = np.empty(max_width)
+    ddv = np.zeros((len(line_wavelengths), nbins + 2))
+    dds = np.zeros((len(line_wavelengths), nbins + 2)) 
     
     # compute partial derivatives for avg values of all Gaussians
     # inside each bin. For each Gaussian, we only compute
     # contributions for bins where it is non-negligible.
     for j in range(len(line_wavelengths)):
+
+        # line width
+        sigma = line_sigmas[j] / C_LIGHT
+        c0 = SQRT_2PI * np.exp(0.5 * sigma**2)
         
+        # wavelength shift for spectral lines
+        line_shift = 1. + redshift + line_vshifts[j] / C_LIGHT
         shifted_line     = line_wavelengths[j] * line_shift
         log_shifted_line = np.log(shifted_line)
         
@@ -247,9 +237,12 @@ def build_emline_model_jacobian(parameters,
         
         nedges = hi - lo + 2 # compute values at edges [lo - 1 ... hi]
 
-        # because we never write the same cell of dda[j] twice, we can
-        # do its writes in place instead of using a temporary buffer
+        # Compute contribs of each line to each partial derivative in place.
+        # No sharing of params between peaks means that we never have to
+        # add contributions from two peaks to same line.
         dda_vals = dda[j][lo:hi+2]
+        ddv_vals = ddv[j][lo:hi+2]
+        dds_vals = dds[j][lo:hi+2]
         
         offset = log_shifted_line / sigma + sigma
         
@@ -288,15 +281,14 @@ def build_emline_model_jacobian(parameters,
             ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * w[i+lo]
             dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * w[i+lo]
         
-        dda_vals[nedges - 1] = 0. # actual derivative for this bin
-        
-        ddv[lo:hi+1] += ddv_vals[:nedges-1]
-        dds[lo:hi+1] += dds_vals[:nedges-1]
-    
+            dda_vals[nedges - 1] = 0. # actual derivative for this bin
+            ddv_vals[nedges - 1] = 0. # actual derivative for this bin
+            dds_vals[nedges - 1] = 0. # actual derivative for this bin
+            
     # missing step -- apply the resolution matrix
     
     # trim off left and right dummy values from each row before returning
-    return np.column_stack((dda[:,1:-1].T, ddv[1:-1], dds[1:-1]))
+    return np.column_stack((dda[:,1:-1].T, ddv[:,1:-1].T, dds[:,1:-1].T))
     
 
 #
@@ -395,15 +387,17 @@ def emlines(obs_wavelengths,
     )
     
     # initial guesses for parameters
-    init_vshift     = np.array(0.)
-    init_sigma      = np.array(75.)
     init_amplitudes = np.full_like(line_wavelengths, 1.)
-    
-    init_vals = np.hstack((init_amplitudes, init_vshift, init_sigma))
+    init_vshifts    = np.full_like(line_wavelengths, 0.)
+    init_sigmas     = np.full_like(line_wavelengths, 75.)
+        
+    init_vals = np.hstack((init_amplitudes, init_vshifts, init_sigmas))
     
     # lower and upper bounds for params
-    bounds_min = [0.]   * len(line_wavelengths) + [-100.,   0.]
-    bounds_max = [1e+3] * len(line_wavelengths) + [+100., 500.]
+    # lower and upper bounds for params
+    n = len(line_wavelengths)
+    bounds_min =  [0.]   * n + [-100.] * n + [  0.]  * n
+    bounds_max =  [1e+3] * n + [+100.] * n + [500.]  * n
     
     # optimize!
     fit_info = least_squares(_objective,
@@ -411,7 +405,7 @@ def emlines(obs_wavelengths,
                              jac=_jacobian,
                              bounds=[bounds_min, bounds_max],
                              args=farg,
-                             max_nfev=100,
+                             max_nfev=5000,
                              xtol=1e-8,
                              method='trf',
                              #verbose=2,
@@ -421,9 +415,8 @@ def emlines(obs_wavelengths,
 
     # extract solution
     params = fit_info.x
-    fitted_amplitudes = params[:-2]
-    fitted_vshift     = params[-2]
-    fitted_sigma      = params[-1]  
+    fitted_amplitudes, fitted_vshifts, fitted_sigmas = \
+        np.array_split(params, 3)
     objval = fit_info.cost
     
-    return fitted_amplitudes, fitted_vshift, fitted_sigma, objval
+    return fitted_amplitudes, fitted_vshifts, fitted_sigmas, objval
