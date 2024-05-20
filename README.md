@@ -18,12 +18,12 @@ The list of implementations includes:
   each peak at an array of equally-spaced points, then use trapezoidal
   rebinning to estimate the average flux in each observed bin.
 
-* emlines_gpu.py -- the current approach, ported to the GPU with Jax
+* emlines_gpu.py -- the current approach, ported to the GPU with JAX
 
 * emline_cpu_direct.py -- computes the average flux in each bin directly
   using a Gaussian integral to estimate the contribution of each peak
 
-* emline_gpu_direct.py -- same approach as cpu_direct, but in Jax for
+* emline_gpu_direct.py -- same approach as cpu_direct, but in JAX for
   the GPU
 
 * emlines_sparse.py -- sparse version of the cpu_direct implementation
@@ -33,7 +33,7 @@ The list of implementations includes:
   for the extremely sparse Jacobian.
 
 All the CU implementations are accelerated with Numba, while the GPU
-implementations use Jax.
+implementations use JAX.
 
 ## Getting Started <a name = "getting_started"></a>
 
@@ -41,18 +41,19 @@ These instructions will help get you a copy of the project up and running on you
 
 ### Prerequisites 
 
-Python 3.11.x or later (I've been using 3.12.2 successfully)
-NumPy
-SciPy
-AstroPy
+* Python 3.11.x or later (I've been using 3.12.2 successfully)
+* NumPy
+* SciPy
+* AstroPy
 
 For CPU:
-Numba 0.59.1 or later
+* Numba 0.59.1 or later
 
 For GPU:
-Jax 0.4.26 or later
-Jaxopt 0.8.3 or later
+* JAX 0.4.26 or later
+* JAXopt 0.8.3 or later
 
+Note that JAXopt will at some point be merged into the Optax library.
 
 ## Usage <a name = "Usage"></a>
 

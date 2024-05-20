@@ -3,7 +3,7 @@ from scipy.optimize import least_squares
 from numba import jit, prange, set_num_threads
 
 # Limit number of parallel CPU cores used
-set_num_threads(8)
+set_num_threads(1)
 
 C_LIGHT = 299792.458
 LOG10 = np.log(10)

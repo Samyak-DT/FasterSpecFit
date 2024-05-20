@@ -104,10 +104,10 @@ def build_emline_model(parameters,
     # last entry is a dummy in case hi == len(obs_bin_edges)
     model_fluxes = np.zeros(nbins + 2)
 
-    # should size this appropriately -- e.g.
-    # at least (MAX_SDEV * sigma) / min(np.diff(obs_bin_edges))
-    # (or we could just allocate a full nbins + 2 entries)
-    edge_vals = np.empty(200)  
+    # create a temporary buffer for per-line calculations, sized large
+    # enough for whatever we may need to compute ([lo - 1 .. hi])
+    max_width = int(2*MAX_SDEV*sigma / min(np.diff(log_obs_bin_edges))) + 4
+    edge_vals = np.empty(max_width)  
     
     # compute total area of all Gaussians inside each bin.
     # For each Gaussian, we only compute area contributions
@@ -126,7 +126,7 @@ def build_emline_model(parameters,
         hi = np.searchsorted(log_obs_bin_edges,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
-        
+
         if hi == lo:  # Gaussian is outside bounds of obs_bin_edges
             continue
         
@@ -197,9 +197,11 @@ def build_emline_model_jacobian(parameters,
     ddv = np.zeros(nbins + 2)
     dds = np.zeros(nbins + 2)
 
-    # temporary buffers reused per line; must hold [lo - 1 .. hi]
-    ddv_vals = np.empty(200)
-    dds_vals = np.empty(200)
+    # create a temporary buffer for per-line calculations, sized large
+    # enough for whatever we may need to compute ([lo - 1 .. hi])
+    max_width = int(2*MAX_SDEV*sigma / min(np.diff(log_obs_bin_edges))) + 4
+    ddv_vals = np.empty(max_width)
+    dds_vals = np.empty(max_width)
     
     # compute partial derivatives for total area of all Gaussians
     # inside each bin. For each Gaussian, we only compute contributions
