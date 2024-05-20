@@ -32,7 +32,10 @@ The list of implementations includes:
   helpful for accelerating the emlines model but is more significant
   for the extremely sparse Jacobian.
 
-All the CU implementations are accelerated with Numba, while the GPU
+* emlines_sparse_multi.py -- sparse cpu_direct computation that
+  learns a separate shift and width for each fitted line
+  
+All the CPU implementations are accelerated with Numba, while the GPU
 implementations use JAX.
 
 ## Getting Started <a name = "getting_started"></a>
