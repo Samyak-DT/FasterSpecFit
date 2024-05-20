@@ -57,7 +57,7 @@ Note that JAXopt will at some point be merged into the Optax library.
 
 ## Usage <a name = "Usage"></a>
 
-> `emlines_loop_execution impl`
+> `python emlines_loop_execution impl`
 
 where `impl` is the suffix of the implementation; e.g., to use
 `emlines_sparse.py`, `impl` should be `sparse`.
