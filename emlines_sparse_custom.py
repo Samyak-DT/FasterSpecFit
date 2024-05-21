@@ -170,6 +170,16 @@ def build_emline_model(parameters,
     return model_fluxes[1:-1]
 
 
+# replacement for np.tile, which is not supported by Numba
+@jit(nopython=True, fastmath=True, nogil=True)
+def mytile(a, n):
+    sz = len(a)
+    r = np.empty(n * sz, dtype=a.dtype)
+    for i in range(n):
+        r[i*sz:(i+1)*sz] = a
+    return r
+
+
 #
 # build_emline_model_jacobian() 
 #
@@ -204,8 +214,8 @@ def build_emline_model_jacobian(parameters,
     
     nlines = len(line_wavelengths)
     dd     = np.empty((3 * nlines, max_width))
-    starts = np.zeros(3 * nlines, dtype=np.int32)
-    ends   = np.zeros(3 * nlines, dtype=np.int32)
+    starts = np.zeros(nlines, dtype=np.int32)
+    ends   = np.zeros(nlines, dtype=np.int32)
     
     # compute partial derivatives for avg values of all Gaussians
     # inside each bin. For each Gaussian, we only compute
@@ -233,9 +243,9 @@ def build_emline_model_jacobian(parameters,
         
         if hi == lo:  # Gaussian is entirely outside bounds of obs_bin_edges
             continue
-
+        
         nedges = hi - lo + 2 # compute values at edges [lo - 1 ... hi]
-
+        
         # Compute contribs of each line to each partial derivative in place.
         # No sharing of params between peaks means that we never have to
         # add contributions from two peaks to same line.
@@ -279,34 +289,29 @@ def build_emline_model_jacobian(parameters,
             dda_vals[i] = (dda_vals[i+1] - dda_vals[i]) * w[i+lo]
             ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * w[i+lo]
             dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * w[i+lo]
-            
-        dda_vals[nedges - 1] = 0. # actual derivative for this bin
-        ddv_vals[nedges - 1] = 0. # actual derivative for this bin
-        dds_vals[nedges - 1] = 0. # actual derivative for this bin
 
+        # don't need to fix the garbage, as sparse rep does not use it
+        #dda_vals[nedges - 1] = 0. # actual derivative for this bin
+        #ddv_vals[nedges - 1] = 0. # actual derivative for this bin
+        #dds_vals[nedges - 1] = 0. # actual derivative for this bin
+        
         if lo == 0:
-            starts[           j] = lo
-            starts[nlines   + j] = lo
-            starts[2*nlines + j] = lo
+            starts[j] = lo
             
             dda_vals[0:nedges - 1] = dda_vals[1:nedges]
             ddv_vals[0:nedges - 1] = ddv_vals[1:nedges]
             dds_vals[0:nedges - 1] = dds_vals[1:nedges]
             # 0 entry of dd*_vals is dummy
         else:
-            starts[           j] = lo - 1
-            starts[nlines   + j] = lo - 1
-            starts[2*nlines + j] = lo - 1
+            starts[j] = lo - 1
             # 0 entry is valid
-            
-        ends[             j] = hi# - 1
-        ends[nlines     + j] = hi# - 1
-        ends[2 * nlines + j] = hi# - 1
         
+        # one past last valid entry
+        ends[j] = hi
+    
     # missing step -- apply the resolution matrix
     
-    # trim off left and right dummy values from each row before returning
-    return (starts, ends, dd)
+    return (mytile(starts, 3), mytile(ends, 3), dd)
     
 
 #
