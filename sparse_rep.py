@@ -29,8 +29,10 @@ class EMLineSparseArray(sp.linalg.LinearOperator):
 
     @staticmethod
     @jit(nopython=True, fastmath=True, nogil=True)
-    def rmatvec_fast(nbins, nvars, starts, ends, values, v):
-
+    def rmatvec_fast(starts, ends, values, v):
+        
+        nvars = len(starts)
+        
         p = np.empty(nvars)
         for i in range(nvars):
             acc = 0.
@@ -44,19 +46,17 @@ class EMLineSparseArray(sp.linalg.LinearOperator):
 
     # Compute matrix-vector product A.T * v, where A is us
     def _rmatvec(self, v):
-
-        nbins, nvars = self.shape
-
-        return self.rmatvec_fast(nbins, nvars, \
-                                 self.starts,
+        return self.rmatvec_fast(self.starts,
                                  self.ends,
                                  self.values,
-                                 v.flatten())
-
+                                 v) # only ever called with 1D arrays
+    
     @staticmethod
     @jit(nopython=True, fastmath=True, nogil=True)
-    def matvec_fast(nbins, nvars, starts, ends, values, v):
-
+    def matvec_fast(starts, ends, values, nbins, v):
+        
+        nvars = len(starts)
+        
         p = np.zeros(nbins)
         for i in range(nvars):
             vals = values[i]    # column i
@@ -67,11 +67,35 @@ class EMLineSparseArray(sp.linalg.LinearOperator):
 
     # Compute matrix-vector product A * v, where A is us
     def _matvec(self, v):
-        
-        nbins, nvars = self.shape
-        
-        return self.matvec_fast(nbins, nvars,
-                                self.starts,
+        return self.matvec_fast(self.starts,
                                 self.ends,
                                 self.values,
-                                v.flatten())
+                                self.shape[0], # nbins
+                                v) # only ever called with 1D arrays w/matmat
+    
+  
+    @staticmethod
+    @jit(nopython=True, fastmath=True, nogil=True)
+    def matmat_fast(starts, ends, values, nbins, X):
+
+        nvars = len(starts)
+        nout = X.shape[1]
+        
+        p = np.zeros((nbins, nout), dtype=X.dtype)
+        
+        for k in range(nvars):
+            vals = values[k]    # column k
+            for i in range(ends[k] - starts[k]):
+                v = vals[i]
+                for j in range(nout):
+                    p[i + starts[k], j] += v * X[k,j]  
+        
+        return p
+
+    # Compute matrix-matrixproduct A * X, where A is us
+    def _matmat(self, X):
+        return self.matmat_fast(self.starts,
+                                self.ends,
+                                self.values,
+                                self.shape[0],
+                                X)

@@ -1,10 +1,9 @@
 import sys
-import time
 from pathlib import Path
 from importlib import import_module
-import timeit
 
 import cProfile as profile
+import pstats
 
 import numpy as np
 import pandas as pd
@@ -32,49 +31,40 @@ df = pd.read_csv(data_path / "fastspec-sample.txt",
 
 coldcache = True
 
-NTRIALS = 50
-totalTime = 0.
+NTRIALS = 10
 
 pr = profile.Profile()
 
-with open(f"times-{pRuntime}.txt", "w") as times:
-    with open(f"results-{pRuntime}.txt", "w") as results:
-        print(f"Runtime: {pRuntime}", file=times)
-        print(f"Time of Execution: {time.ctime(time.time())}", file=times)
     
-        #Calculating the time for each file to process
-        for spectrum in df.itertuples(index=False):
-            
-            data = pd.read_csv(data_path / spectrum.file,
-                               delimiter = " ",
-                               names = ["wavelength", "flux", "ivar", "xxx"])
-            
-            if coldcache:
-                for i in range(10):
-                    # run once to warm up the cache and do any initial
-                    # driver loading
-                    fit.emlines(data["wavelength"].values,
-                                data["flux"].values,
-                                data["ivar"].values,
-                                spectrum.redshift,
-                                line_wavelengths)
-                coldcache = False
-
-            pr.enable()
+#Calculating the time for each file to process
+for spectrum in df.itertuples(index=False):
+    
+    data = pd.read_csv(data_path / spectrum.file,
+                       delimiter = " ",
+                       names = ["wavelength", "flux", "ivar", "xxx"])
+    
+    if coldcache:
+        for i in range(10):
+            # run once to warm up the cache and do any initial
+            # driver loading
             fit.emlines(data["wavelength"].values,
                         data["flux"].values,
                         data["ivar"].values,
                         spectrum.redshift,
                         line_wavelengths)
-            pr.disable()
+            coldcache = False
             
-            fitted_amplitudes, fitted_vshift, fitted_sigma, objval = \
-                fit.emlines(data["wavelength"].values,
-                            data["flux"].values,
-                            data["ivar"].values,
-                            spectrum.redshift,
-                            line_wavelengths)
-            print(fitted_amplitudes, fitted_vshift, fitted_sigma, objval, file=results)
+    pr.enable()
+    for i in range(NTRIALS):
+        fit.emlines(data["wavelength"].values,
+                    data["flux"].values,
+                    data["ivar"].values,
+                    spectrum.redshift,
+                    line_wavelengths)
+    pr.disable()
 
+st = pstats.Stats(pr).strip_dirs().sort_stats("cumulative")
+st.print_stats()
+st.print_callees()
 
-pr.print_stats(2)
+#pr.print_stats(2)
