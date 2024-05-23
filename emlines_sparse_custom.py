@@ -429,10 +429,10 @@ def emlines(obs_wavelengths,
                              bounds=[bounds_min, bounds_max],
                              args=farg,
                              max_nfev=5000,
-                             xtol=1e-8,
-                             method='trf',
+                             xtol=1e-10,
+                             method="trf",
                              #verbose=2,
-                             #x_scale="jac",
+                             # x_scale="jac",
                              tr_solver="lsmr",
                              tr_options={"regularize": True})
 
