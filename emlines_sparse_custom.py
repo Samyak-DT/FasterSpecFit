@@ -81,18 +81,34 @@ def norm_cdf(a):
 #   vector of average fluxes in each observed wavelength bin
 #
 @jit(nopython=True, fastmath=True, nogil=True)
-def build_emline_model(parameters,
+def build_emline_model(free_parameters,
                        obs_bin_edges,
                        log_obs_bin_edges,
+                       resolution_matrix,
                        redshift,
-                       line_wavelengths):
+                       line_wavelengths,
+                       parameters,
+                       Ifree,
+                       Itied,
+                       tiedtoparam,
+                       tiedfactor,
+                       doubletindx,
+                       doubletpair):
     
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
-    
+
+    # Moustakas - to be optimized
+    if len(Itied) > 0:
+        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+            parameters[I] = parameters[indx] * factor
+
     line_amplitudes, line_vshifts, line_sigmas = \
         np.array_split(parameters, 3)
-    
+
+    # Moustakas - handle doublets
+    line_amplitudes[doubletindx] *= line_amplitudes[doubletpair]
+
     ibin_width = np.hstack((np.array([0.]), 1/np.diff(obs_bin_edges)))
     
     nbins = len(obs_bin_edges) - 1
@@ -310,6 +326,7 @@ def build_emline_model_jacobian(parameters,
         ends[j] = hi
     
     # missing step -- apply the resolution matrix
+    print('ToDo: apply the resolution matrix here!')
     
     return (mytile(starts, 3), mytile(ends, 3), dd)
     
@@ -345,14 +362,42 @@ def _jacobian(parameters,
 # *args contains the fixed arguments to build_emline_model()
 #
 #@jit(nopython=True, fastmath=False, nogil=True)
-def _objective(parameters,
+def _objective(free_parameters,
                obs_fluxes,
                obs_weights,
-               *args):
-    
-    model_fluxes = build_emline_model(parameters, *args)
-    
-    residuals = obs_weights * (model_fluxes - obs_fluxes)
+               obs_bin_edges,
+               log_obs_bin_edges,
+               resolution_matrix,
+               redshift,
+               line_wavelengths,
+               parameters,
+               Ifree,
+               Itied,
+               tiedtoparam,
+               tiedfactor,
+               doubletindx,
+               doubletpair):
+
+    # per-camera residuals
+    residuals = []
+    for icam in range(len(obs_fluxes)):
+        model_fluxes = build_emline_model(free_parameters,
+                                          obs_bin_edges[icam],
+                                          log_obs_bin_edges[icam],
+                                          resolution_matrix[icam],
+                                          redshift,
+                                          line_wavelengths,
+                                          parameters,
+                                          Ifree,
+                                          Itied,
+                                          tiedtoparam,
+                                          tiedfactor,
+                                          doubletindx,
+                                          doubletpair)
+        residuals.append(obs_weights[icam] * (obs_fluxes[icam] - model_fluxes)) # data minus model
+
+    #residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
+    residuals = np.hstack(residuals)
     
     return residuals
 
