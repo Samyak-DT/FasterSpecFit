@@ -14,6 +14,7 @@ Dependencies:
 
 python code/desihub/FasterSpecFit/fastspec_emlines.py --build-test-data --ntargets=3
 python code/desihub/FasterSpecFit/fastspec_emlines.py --emlines-main
+python code/desihub/FasterSpecFit/fastspec_emlines.py --emlines-fast
 
 """
 import os, time, pdb
@@ -145,8 +146,10 @@ def run_emlines_main(datadir='.'):
     from fastspecfit.emlines import EMFitTools
 
     log = get_logger()
-    
+
+    t0 = time.time()    
     specdata = read_test_data(datadir=datadir)
+    log.info(f'Gathering the data took {time.time()-t0:.2f} seconds.')
 
     # loop on each spectrum
     for data in specdata:
@@ -183,14 +186,14 @@ def run_emlines_main(datadir='.'):
                                      resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
         model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
         chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-        log.info('Line-fitting with no broad lines and {} free parameters took {:.2f} seconds [niter={}, rchi2={:.4f}].'.format(
-            nfree_nobroad, time.time()-t0, fit_nobroad.meta['nfev'], chi2_nobroad))
+        log.info(f'Line-fitting with no broad lines and {nfree_nobroad} free parameters took {time.time()-t0:.2f} seconds [niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
 
         # write out...
 
     
 def run_emlines_fast(datadir='.'):
-    pass
+
+    pdb.set_trace()
 
 
 
