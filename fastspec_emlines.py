@@ -13,12 +13,16 @@ Dependencies:
 * fastspecfit
 
 python code/desihub/FasterSpecFit/fastspec_emlines.py --build-test-data --ntargets=3
-python code/desihub/FasterSpecFit/fastspec_emlines.py --emlines-main
-python code/desihub/FasterSpecFit/fastspec_emlines.py --emlines-fast
+python code/desihub/FasterSpecFit/fastspec_emlines.py
+python code/desihub/FasterSpecFit/fastspec_emlines.py --fast
 
 """
 import os, time, pdb
 import numpy as np
+
+from desiutil.log import get_logger
+log = get_logger()
+
 
 def read_test_data(datadir='.'):
     """Read the test data.
@@ -138,14 +142,11 @@ def read_test_data(datadir='.'):
     return data
 
 
-def run_emlines_main(datadir='.'):
+def fit_emlines(datadir='.', fast=False):
     """Use the current (main) version of the emission-line fitting code.
 
     """
-    from desiutil.log import get_logger
     from fastspecfit.emlines import EMFitTools
-
-    log = get_logger()
 
     t0 = time.time()    
     specdata = read_test_data(datadir=datadir)
@@ -178,25 +179,69 @@ def run_emlines_main(datadir='.'):
             data, emlinewave, emlineflux, log=log)
     
         EMFit.populate_linemodel(linemodel_nobroad, initial_guesses, param_bounds, log=log)
-        EMFit.populate_linemodel(linemodel_broad, initial_guesses, param_bounds, log=log)
+        #EMFit.populate_linemodel(linemodel_broad, initial_guesses, param_bounds, log=log)
 
         # Initial fit - initial_linemodel_nobroad
         t0 = time.time()
-        fit_nobroad = EMFit.optimize(linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
-                                     resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
-        model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
-        chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-        log.info(f'Line-fitting with no broad lines and {nfree_nobroad} free parameters took {time.time()-t0:.2f} seconds [niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
+        if fast:
+            from scipy.optimize import least_squares
+            from FasterSpecFit import _objective, _jacobian, centers_to_edges
+
+            # unpack the linemodel
+            parameters, (Ifree, Itied, tiedtoparam, tiedfactor, bounds, doubletindx, doubletpair, \
+                         linewaves) = EMFit._linemodel_to_parameters(linemodel, EMFit.fit_linetable)
+            log.debug(f'Optimizing {len(Ifree)} free parameters')
+
+            pdb.set_trace()
+
+            farg = (emlinewave, emlineflux, weights, redshift, self.dlog10wave, 
+                    resolution_matrix, camerapix, parameters, ) + \
+                    (Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, 
+                     doubletpair, linewaves)
+
+            init_vals = parameters[Ifree]
+
+            #farg = (
+            #    obs_fluxes,
+            #    obs_weights,
+            #    obs_bin_edges,
+            #    np.log(obs_bin_edges),
+            #    redshift,
+            #    line_wavelengths,
+            #    )
+            
+            fit_info = least_squares(_objective,
+                                     init_vals,
+                                     jac=_jacobian,
+                                     bounds=[bounds_min, bounds_max],
+                                     args=farg,
+                                     max_nfev=5000,
+                                     xtol=1e-10,
+                                     method="trf",
+                                     #verbose=2,
+                                     # x_scale="jac",
+                                     tr_solver="lsmr",
+                                     tr_options={"regularize": True})
+
+    
+            pdb.set_trace()
+            fit_nobroad = EMFit.optimize(linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
+                                         resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
+            model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
+            chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
+            log.info('Line-fitting with no broad lines and {} free parameters took {:.2f} seconds [niter={}, rchi2={:.4f}].'.format(
+                nfree_nobroad, time.time()-t0, fit_nobroad.meta['nfev'], chi2_nobroad))
+        else:
+            fit_nobroad = EMFit.optimize(linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
+                                         resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
+            model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
+            chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
+            log.info('Line-fitting with no broad lines and {} free parameters took {:.2f} seconds [niter={}, rchi2={:.4f}].'.format(
+                nfree_nobroad, time.time()-t0, fit_nobroad.meta['nfev'], chi2_nobroad))
 
         # write out...
 
     
-def run_emlines_fast(datadir='.'):
-
-    pdb.set_trace()
-
-
-
 def build_test_data(datadir='./', ntargets=None):
     """Build the test dataset; will only work at NERSC if run by Moustakas.
 
@@ -213,7 +258,7 @@ def build_test_data(datadir='./', ntargets=None):
     out_redrockfile = os.path.join(datadir, 'redrock-test-data.fits')
     out_fastfile = os.path.join(datadir, 'fastspec-test-data.fits')
     if os.path.isfile(out_coaddfile):
-        print(f'Warning: overwriting existing output file {out_coaddfile}')
+        log.info(f'Warning: overwriting existing output file {out_coaddfile}')
 
     # select spectra with strong line-emission and no broad lines (for now)
     specprod, coadd_type = 'iron', 'healpix'
@@ -275,10 +320,10 @@ def build_test_data(datadir='./', ntargets=None):
             spec.flux[cam][iobj, :] -= np.interp(spec.wave[cam], modelwave, continuum[iobj, :])
 
     # write out
-    print(f'Writing {len(targetids)} targets to {out_coaddfile}')
+    log.info(f'Writing {len(targetids)} targets to {out_coaddfile}')
     write_spectra(out_coaddfile, spec)
 
-    print(f'Writing {len(targetids)} targets to {out_redrockfile}')
+    log.info(f'Writing {len(targetids)} targets to {out_redrockfile}')
     fitsio.write(out_redrockfile, zb, extname='REDSHIFTS', clobber=True)
     fitsio.write(out_redrockfile, fm, extname='FIBERMAP')
 
@@ -291,9 +336,8 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--build-test-data', action='store_true', help='Build the test dataset.')
-    parser.add_argument('--emlines-main', action='store_true', help='Build the main emission-line fitting version.')
-    parser.add_argument('--emlines-fast', action='store_true', help='Build the refactored, fast emission-line fitting code.')
-    parser.add_argument('--datadir', type=str, default='./', help='I/O directory.')
+    parser.add_argument('--fast', action='store_true', help='Build the refactored, fast emission-line fitting code.')
+    parser.add_argument('--datadir', type=str, default=os.getenv('HOME'), help='I/O directory.')
     parser.add_argument('--ntargets', type=int, default=None, help='For testing, test on ntargets objects.')
     args = parser.parse_args()
 
@@ -301,11 +345,7 @@ def main():
     if args.build_test_data:
         build_test_data(args.datadir, ntargets=args.ntargets)
 
-    if args.emlines_main:
-        run_emlines_main(datadir='.')
-
-    if args.emlines_fast:
-        run_emlines_fast(datadir='.')
+    fit_emlines(datadir=args.datadir, fast=args.fast)
         
 
 if __name__ == '__main__':
