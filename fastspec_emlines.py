@@ -12,9 +12,9 @@ Dependencies:
 * desimodel(?)
 * fastspecfit
 
-python code/desihub/FasterSpecFit/fastspec_emlines.py --build-test-data --ntargets=3
-python code/desihub/FasterSpecFit/fastspec_emlines.py
-python code/desihub/FasterSpecFit/fastspec_emlines.py --fast
+time python code/desihub/FasterSpecFit/FasterSpecFit/fastspec_emlines.py --build-test-data --ntargets=20
+time python code/desihub/FasterSpecFit/FasterSpecFit/fastspec_emlines.py
+time python code/desihub/FasterSpecFit/FasterSpecFit/fastspec_emlines.py --fast
 
 """
 import os, time, pdb
@@ -166,7 +166,7 @@ def fit_emlines(datadir='.', fast=False):
     log.info(f'Gathering the data took {time.time()-t0:.2f} seconds.')
 
     # loop on each spectrum
-    for data in specdata:
+    for iobj, data in enumerate(specdata[2:3]):
         EMFit = EMFitTools(uniqueid=data['uniqueid'])
 
         # Combine all three cameras; we will unpack them to build the
@@ -175,7 +175,7 @@ def fit_emlines(datadir='.', fast=False):
         emlinewave = data['wave']
         emlineflux = data['flux'] # we already subtracted the continuum for this test
 
-        # hack!
+        # temporary hack!
         _emlinewave = np.hstack(emlinewave)
         _emlineflux = np.hstack(emlineflux)
 
@@ -215,35 +215,33 @@ def fit_emlines(datadir='.', fast=False):
                     resolution_matrix, redshift, linewaves,
                     parameters, Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, doubletpair)
 
-            #farg = (
-            #    obs_fluxes,
-            #    obs_weights,
-            #    obs_bin_edges,
-            #    np.log(obs_bin_edges),
-            #    redshift,
-            #    line_wavelengths,
-            #    )
-
             t0 = time.time()
-            fit_nobroad = least_squares(_objective,
-                                        free_parameters,
-                                        #jac=_jacobian,
-                                        bounds=tuple(zip(*bounds)),
-                                        args=farg,
-                                        max_nfev=5000,
-                                        xtol=1e-10,
-                                        method="trf",
-                                        #verbose=2,
-                                        # x_scale="jac",
-                                        tr_solver="lsmr",
-                                        tr_options={"regularize": True})
-            log.info('Line-fitting with no broad lines took {:.4f} seconds [niter={}].'.format(
-                time.time()-t0, fit_nobroad['nfev']))
+            try:
+                fit_nobroad = least_squares(_objective,
+                                            free_parameters,
+                                            #jac=_jacobian,
+                                            bounds=tuple(zip(*bounds)),
+                                            args=farg,
+                                            max_nfev=5000,
+                                            xtol=1e-10,
+                                            method="trf",
+                                            #verbose=2,
+                                            # x_scale="jac",
+                                            tr_solver="lsmr",
+                                            tr_options={"regularize": True})
+                log.info('Line-fitting with no broad lines took {:.4f} seconds [niter={}].'.format(
+                    time.time()-t0, fit_nobroad['nfev']))
+            except:
+                log.warning(f'Problem fitting object index {iobj}')
+                import traceback
+                traceback.print_exc()
         else:
-            resolution_matrix = data['res']
+            emlinewave = np.hstack(emlinewave)
+            emlineflux = np.hstack(emlineflux)
             emlineivar = np.hstack(data['ivar'])
             camerapix = data['camerapix']
             weights = np.sqrt(emlineivar)
+            resolution_matrix = data['res']
             
             t0 = time.time()
             fit_nobroad = EMFit.optimize(linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
@@ -358,6 +356,7 @@ def main():
     # Build the test dataset (will only work at NERSC if run by Moustakas).
     if args.build_test_data:
         build_test_data(args.datadir, ntargets=args.ntargets)
+        return
 
     fit_emlines(datadir=args.datadir, fast=args.fast)
         

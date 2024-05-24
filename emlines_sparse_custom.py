@@ -394,7 +394,9 @@ def _objective(free_parameters,
                                           tiedfactor,
                                           doubletindx,
                                           doubletpair)
-        residuals.append(obs_weights[icam] * (obs_fluxes[icam] - model_fluxes)) # data minus model
+        resid = obs_weights[icam] * (obs_fluxes[icam] - model_fluxes) # data minus model
+        #print(icam, np.any(np.isinf(resid)) or np.any(np.isnan(resid)))
+        residuals.append(resid)
 
     #residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
     residuals = np.hstack(residuals)
