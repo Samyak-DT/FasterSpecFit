@@ -81,33 +81,18 @@ def norm_cdf(a):
 #   vector of average fluxes in each observed wavelength bin
 #
 @jit(nopython=True, fastmath=True, nogil=True)
-def build_emline_model(free_parameters,
+def build_emline_model(parameters,
                        obs_bin_edges,
                        log_obs_bin_edges,
                        resolution_matrix,
                        redshift,
-                       line_wavelengths,
-                       parameters,
-                       Ifree,
-                       Itied,
-                       tiedtoparam,
-                       tiedfactor,
-                       doubletindx,
-                       doubletpair):
+                       line_wavelengths):
     
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
 
-    # Moustakas - to be optimized
-    if len(Itied) > 0:
-        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
-            parameters[I] = parameters[indx] * factor
-
     line_amplitudes, line_vshifts, line_sigmas = \
         np.array_split(parameters, 3)
-
-    # Moustakas - handle doublets
-    line_amplitudes[doubletindx] *= line_amplitudes[doubletpair]
 
     ibin_width = np.hstack((np.array([0.]), 1/np.diff(obs_bin_edges)))
     
@@ -214,6 +199,7 @@ def build_emline_model_jacobian(parameters,
                                 obs_weights,
                                 obs_bin_edges,
                                 log_obs_bin_edges,
+                                resolution_matrix,
                                 redshift,
                                 line_wavelengths):
     
@@ -378,29 +364,30 @@ def _objective(free_parameters,
                doubletindx,
                doubletpair):
 
+    # Moustakas - handle tied parameters and doublets
+    parameters[Ifree] = free_parameters
+    if len(Itied) > 0:
+        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+            parameters[I] = parameters[indx] * factor
+
+    # fragile! assumes the amplitudes are always first...
+    parameters[doubletindx] *= parameters[doubletpair]
+
     # per-camera residuals
-    residuals = []
+    residuals = [] # numba doesn't like lists and np.hstack!
     for icam in range(len(obs_fluxes)):
-        model_fluxes = build_emline_model(free_parameters,
+        model_fluxes = build_emline_model(parameters,
                                           obs_bin_edges[icam],
                                           log_obs_bin_edges[icam],
                                           resolution_matrix[icam],
                                           redshift,
-                                          line_wavelengths,
-                                          parameters,
-                                          Ifree,
-                                          Itied,
-                                          tiedtoparam,
-                                          tiedfactor,
-                                          doubletindx,
-                                          doubletpair)
-        resid = obs_weights[icam] * (obs_fluxes[icam] - model_fluxes) # data minus model
-        #print(icam, np.any(np.isinf(resid)) or np.any(np.isnan(resid)))
-        residuals.append(resid)
+                                          line_wavelengths)
 
-    #residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
+        resid = obs_weights[icam] * (obs_fluxes[icam] - model_fluxes) # data minus model
+        residuals.append(resid)
+        
     residuals = np.hstack(residuals)
-    
+
     return residuals
 
 

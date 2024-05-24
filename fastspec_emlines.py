@@ -166,7 +166,7 @@ def fit_emlines(datadir='.', fast=False):
     log.info(f'Gathering the data took {time.time()-t0:.2f} seconds.')
 
     # loop on each spectrum
-    for iobj, data in enumerate(specdata[2:3]):
+    for iobj, data in enumerate(specdata):
         EMFit = EMFitTools(uniqueid=data['uniqueid'])
 
         # Combine all three cameras; we will unpack them to build the
@@ -196,7 +196,7 @@ def fit_emlines(datadir='.', fast=False):
         # Initial fit - initial_linemodel_nobroad
         if fast:
             from scipy.optimize import least_squares
-            from FasterSpecFit.emlines_sparse_custom import _objective#, _jacobian
+            from FasterSpecFit.emlines_sparse_custom import build_emline_model, _objective, _jacobian
 
             # do not stack the cameras
             emlinewave_edges = data['wave_edges']
@@ -235,6 +235,36 @@ def fit_emlines(datadir='.', fast=False):
                 log.warning(f'Problem fitting object index {iobj}')
                 import traceback
                 traceback.print_exc()
+
+            parameters[Ifree] = fit_nobroad.x
+            if len(Itied) > 0:
+                for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+                    parameters[I] = parameters[indx] * factor
+
+            # fragile!
+            parameters[doubletindx] *= parameters[doubletpair]
+
+            # quick QA
+            model = []
+            for icam in range(len(emlineflux)):
+                _model = build_emline_model(parameters,
+                                            emlinewave_edges[icam],
+                                            logemlinewave_edges[icam],
+                                            resolution_matrix[icam],
+                                            redshift,
+                                            linewaves)
+                model.append(_model)
+            model = np.hstack(model)
+
+            ## quick QA
+            #import matplotlib.pyplot as plt
+            #plt.clf()
+            #plt.plot(_emlinewave, _emlineflux)
+            #plt.plot(_emlinewave, model, color='red')
+            #plt.xlim(8000, 8500)
+            #plt.savefig(f'ioannis/tmp/qa-fastspec-{data["uniqueid"]}.png')
+            #import pdb ; pdb.set_trace()
+
         else:
             emlinewave = np.hstack(emlinewave)
             emlineflux = np.hstack(emlineflux)
@@ -248,7 +278,7 @@ def fit_emlines(datadir='.', fast=False):
                                          resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
             model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
             chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-            log.info('Line-fitting with no broad lines and {} free parameters took {:.2f} seconds [niter={}, rchi2={:.4f}].'.format(
+            log.info('Line-fitting with no broad lines and {} free parameters took {:.4f} seconds [niter={}, rchi2={:.4f}].'.format(
                 nfree_nobroad, time.time()-t0, fit_nobroad.meta['nfev'], chi2_nobroad))
 
         # write out...
