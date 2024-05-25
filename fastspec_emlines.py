@@ -7,8 +7,10 @@ algorithms.
 Dependencies:
 * astropy
 * fitsio
+* speclite
 * desispec
 * desiutil
+* desitarget
 * desimodel(?)
 * fastspecfit
 
@@ -379,7 +381,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--build-test-data', action='store_true', help='Build the test dataset.')
     parser.add_argument('--fast', action='store_true', help='Build the refactored, fast emission-line fitting code.')
-    parser.add_argument('--datadir', type=str, default=os.getenv('HOME'), help='I/O directory.')
+    parser.add_argument('--datadir', type=str, default="./data", help='I/O directory.')
     parser.add_argument('--ntargets', type=int, default=None, help='For testing, test on ntargets objects.')
     args = parser.parse_args()
 

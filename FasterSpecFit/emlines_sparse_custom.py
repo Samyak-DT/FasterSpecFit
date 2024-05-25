@@ -11,7 +11,7 @@ from scipy.optimize import least_squares
 
 from numba import jit
 
-from sparse_rep import EMLineSparseArray
+from .sparse_rep import EMLineSparseArray
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
