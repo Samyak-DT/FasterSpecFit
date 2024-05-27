@@ -169,9 +169,9 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
 
     from fastspecfit.util import trapz_rebin
     if fast:
+        #from scipy.sparse.linalg import spsolve
         from FasterSpecFit import centers_to_edges
         from FasterSpecFit import _objective as objective
-        # also import Jacobian later on
     else:
         from fastspecfit.emlines import _objective_function as objective
     
@@ -181,6 +181,23 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     # arguments passed to the least_squares method
     if fast:
 
+        """
+        robs_fluxes = np.empty_like(emlineflux)
+        for icam, campix in enumerate(camerapix):
+            # start and end for obs fluxes of camera icam
+            s = campix[0]
+            e = campix[1]
+            
+            M = resolution_matrix[icam]
+            A = M.todense()
+            print("BEGIN")
+            for i in range(A.shape[0]):
+                print(i, np.max(np.abs(A[i])))
+            
+            robs_fluxes[s:e] = solve(A, emlineflux[s:e])
+            #robs_fluxes[s:e] = spsolve(resolution_matrix[icam].tocsr(), emlineflux[s:e])
+        """
+        
         obs_bin_edges = centers_to_edges(emlinewave, camerapix)
         farg = (obs_bin_edges, np.log(obs_bin_edges), emlineflux,
                 weights, redshift, linewaves, resolution_matrix, camerapix, parameters, ) + \
@@ -202,8 +219,14 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
             fit_info = least_squares(objective, initial_guesses, args=farg, max_nfev=5000, 
                                      xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
                                      tr_solver='lsmr', tr_options={'regularize': True},
-                                     method='trf', bounds=tuple(zip(*bounds)))#, verbose=2)
+                                     method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
             parameters[Ifree] = fit_info.x
+
+            # NB: after running least_squares,
+            #  - tied parameters need to be updated from free parameters
+            #  - BUT, doublet-derived amplitudes are represented as actual amplitudes
+            #     in parameters[] array (though they are still ratios in fit_info).
+            
         except:
             if emfit.uniqueid:
                 errmsg = 'Problem in scipy.optimize.least_squares for {}.'.format(emfit.uniqueid)
@@ -304,16 +327,20 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     log.debug('Dropping {} sigma,vshift parameters of zero-amplitude lines.'.format(np.sum(drop2)))
     log.debug('Dropping {} parameters which are out-of-bounds.'.format(np.sum(drop3)))
     Idrop = np.where(np.logical_or.reduce((drop1, drop2, drop3)))[0]
-        
+    
     if len(Idrop) > 0:
         log.debug('  Dropping {} unique parameters.'.format(len(Idrop)))
         parameters[Idrop] = 0.0
-            
+    
     # apply tied constraints
     if len(Itied) > 0:
         for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
             parameters[I] = parameters[indx] * factor
-        
+            
+    # FIXME: original code does not apply doublets again after
+    # dropping params, but it might be necessary.  Awaiting
+    # upstream decision.
+
     # Now loop back through and drop Broad balmer lines that:
     #   (1) are narrower than their narrow-line counterparts;
     #   (2) have a narrow line whose amplitude is smaller than that of the broad line
@@ -325,14 +352,15 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     out_linemodel['value'] = parameters
     out_linemodel.meta['nfev'] = fit_info['nfev']
     out_linemodel.meta['status'] = fit_info['status']
-
+    
     # Get the final line-amplitudes, after resampling and convolution (see
     # https://github.com/desihub/fastspecfit/issues/139). Some repeated code
     # from build_emline_model...
     if get_finalamp:
         lineamps, linevshifts, linesigmas = np.array_split(parameters, 3) # 3 parameters per line
+
         lineindxs = np.arange(len(lineamps))
-            
+        
         I = lineamps > 0
         if np.count_nonzero(I) > 0:
             linevshifts = linevshifts[I]
@@ -351,16 +379,16 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
             else:
                 minwave = emlinewave[0]-2.
                 maxwave = emlinewave[-1]+2.
-                
+            
             _emlinewave = []
             for icam, campix in enumerate(camerapix):
                 _emlinewave.append(emlinewave[campix[0]:campix[1]])
 
-            C_LIGHT = 299792.458
             # line-width [log-10 Angstrom] and redshifted wavelength [log-10 Angstrom]
+            C_LIGHT = 299792.458
             log10sigmas = linesigmas / C_LIGHT / np.log(10)                
             linezwaves = np.log10(linewaves * (1.0 + redshift + linevshifts / C_LIGHT))
-        
+            
             for lineindx, lineamp, linezwave, log10sigma in zip(lineindxs, lineamps, linezwaves, log10sigmas):
                 log10wave = np.arange(linezwave - (5 * log10sigma), linezwave + (5 * log10sigma), emfit.dlog10wave)
                 log10wave = np.hstack((np.log10(minwave), log10wave, np.log10(maxwave)))
@@ -372,6 +400,16 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 model_convol = resolution_matrix[icam].dot(model_resamp)
                 out_linemodel['obsvalue'][lineindx] = np.max(model_convol)
                 
+            """
+            import matplotlib.pyplot as plt
+            bestfit = emfit.bestfit(out_linemodel, redshift, emlinewave, resolution_matrix, camerapix)
+            plt.clf()
+            plt.plot(emlinewave, emlineflux, label='data', color='gray', lw=4)
+            plt.plot(emlinewave, bestfit, label='bestfit', ls='--', lw=3, alpha=0.7, color='k')
+            plt.legend()
+            plt.savefig('fit.png')
+            """
+            
     return out_linemodel, (t1 - t0)
 
 

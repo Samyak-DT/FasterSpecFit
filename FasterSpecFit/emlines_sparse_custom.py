@@ -6,12 +6,12 @@
 import numpy as np
 from math import erf, erfc
 
-import scipy.sparse as sp
 from scipy.optimize import least_squares
 
 from numba import jit
 
-from .sparse_rep import EMLineSparseArray
+#import scipy.sparse as sp
+#from .sparse_rep import EMLineSparseArray
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
@@ -81,7 +81,7 @@ def norm_cdf(a):
 #   vector of average fluxes in each observed wavelength bin
 #
 @jit(nopython=True, fastmath=True, nogil=True)
-def build_emline_model(parameters,
+def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
                        obs_bin_edges,
                        log_obs_bin_edges,
                        redshift,
@@ -89,9 +89,6 @@ def build_emline_model(parameters,
     
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
-
-    line_amplitudes, line_vshifts, line_sigmas = \
-        np.array_split(parameters, 3)
 
     ibin_width = np.hstack((np.array([0.]), 1/np.diff(obs_bin_edges)))
     
@@ -168,7 +165,6 @@ def build_emline_model(parameters,
     return model_fluxes[1:-1]
 
 
-
 #
 # Objective function for least-squares optimization Build the emline
 # model as described above and compute the weighted vector of
@@ -205,18 +201,19 @@ def _objective(free_parameters,
         for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
             parameters[I] = parameters[indx] * factor
     
-    # fragile! assumes the amplitudes are always first...
-    parameters[doubletindx] *= parameters[doubletpair]
-
-    model_fluxes = np.empty_like(obs_fluxes)
+    lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
+    # doublets
+    lineamps[doubletindx] *= lineamps[doubletpair]
+    
+    model_fluxes = np.empty_like(obs_fluxes)
     for icam, campix in enumerate(camerapix):
 
         # start and end for obs fluxes of camera icam
         s = campix[0]
         e = campix[1]
         
-        mf = build_emline_model(parameters,
+        mf = build_emline_model(lineamps, linevshifts, linesigmas,
                                 obs_bin_edges[s+icam:e+icam+1],
                                 log_obs_bin_edges[s+icam:e+icam+1],
                                 redshift,
@@ -406,6 +403,7 @@ def _jacobian(parameters,
 # Convert N bin centers to N+1 bin edges.  Edges are placed
 # halfway between centers, with extrapolation at the ends.
 #
+@jit(nopython=True, fastmath=False, nogil=True)
 def centers_to_edges(centers, camerapix):
 
     ncameras = camerapix.shape[0]
@@ -424,7 +422,9 @@ def centers_to_edges(centers, camerapix):
         edge_l = icenters[ 0] - (icenters[ 1] - int_edges[ 0])
         edge_r = icenters[-1] + (icenters[-1] - int_edges[-1])
 
-        edges[s+icam:e+icam+1] = np.hstack((edge_l, int_edges, edge_r))
+        edges[s+icam:e+icam+1] = np.hstack((np.array((edge_l,)),
+                                            int_edges,
+                                            np.array((edge_r,))))
 
     return edges
 
