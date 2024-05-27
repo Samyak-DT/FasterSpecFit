@@ -222,8 +222,8 @@ def _objective(free_parameters,
                                 redshift,
                                 line_wavelengths)
         
-        model_fluxes[s:e] = resolution_matrix[icam].dot(mf)
-    
+        model_fluxes[s:e] = np.maximum(0., resolution_matrix[icam].dot(mf))
+        
     residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
     
     return residuals
