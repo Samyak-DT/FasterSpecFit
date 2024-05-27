@@ -71,14 +71,10 @@ def read_test_data(datadir='.'):
             'cameras': cameras,
             #'dluminosity': dlum[iobj], 'dmodulus': dmod[iobj], 'tuniv': tuniv[iobj],
             'wave': [],
-            'wave_edges': [],
-            'logwave_edges': [],
             'flux': [],
             'ivar': [],
-            'weights': [],
             'mask': [],
             'res': [],
-            'res_numpy': [],
             'coadd_wave': coadd_spec.wave[coadd_cameras],
             'coadd_flux': coadd_spec.flux[coadd_cameras][iobj, :],
             'coadd_ivar': coadd_spec.ivar[coadd_cameras][iobj, :],
@@ -108,18 +104,10 @@ def read_test_data(datadir='.'):
             specdata['wave'].append(wave)
             specdata['flux'].append(flux)
             specdata['ivar'].append(ivar)
-            specdata['weights'].append(np.sqrt(ivar))
             specdata['mask'].append(mask)
             specdata['res'].append(res)
-            specdata['res_numpy'].append(res_numpy)
-
+            
             npixpercamera.append(len(wave)) # number of pixels in this camera
-
-            # parameters needed for the "fast" version of the fitter
-            from FasterSpecFit.emlines_sparse_custom import centers_to_edges
-            waveedges = centers_to_edges(wave)
-            specdata['wave_edges'].append(waveedges)
-            specdata['logwave_edges'].append(np.log(waveedges))
             
         # Pre-compute some convenience variables for "un-hstacking"
         # an "hstacked" spectrum.
@@ -157,6 +145,236 @@ def read_test_data(datadir='.'):
     return data
 
 
+def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
+                   resolution_matrix, camerapix, log=None, get_finalamp=False,
+                   verbose=False, debug=False, fast=False):
+
+    from scipy.optimize import least_squares
+    
+    if log is None:
+        from desiutil.log import get_logger, DEBUG
+        if verbose:
+            log = get_logger(DEBUG)
+        else:
+            log = get_logger()
+    
+    parameters, (Ifree, Itied, tiedtoparam, tiedfactor, bounds, doubletindx, doubletpair, \
+                 linewaves) = emfit._linemodel_to_parameters(linemodel, emfit.fit_linetable)
+    log.debug('Optimizing {} free parameters'.format(len(Ifree)))
+
+    # corner case where all lines are out of the wavelength range, which can
+    # happen at high redshift and with the red camera masked, e.g.,
+    # iron/main/dark/6642/39633239580608311).
+    initial_guesses = parameters[Ifree]
+
+    from fastspecfit.util import trapz_rebin
+    if fast:
+        from FasterSpecFit import centers_to_edges
+        from FasterSpecFit import _objective as objective
+        # also import Jacobian later on
+    else:
+        from fastspecfit.emlines import _objective_function as objective
+    
+    t0 = time.time()
+
+    # The only difference between the old and new emline fitting is in the
+    # arguments passed to the least_squares method
+    if fast:
+
+        obs_bin_edges = centers_to_edges(emlinewave, camerapix)
+        farg = (obs_bin_edges, np.log(obs_bin_edges), emlineflux,
+                weights, redshift, linewaves, resolution_matrix, camerapix, parameters, ) + \
+                (Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, doubletpair)
+        jac = "2-point"
+        
+    else:
+        
+        farg = (emlinewave, emlineflux, weights, redshift, emfit.dlog10wave, 
+                resolution_matrix, camerapix, parameters, ) + \
+                (Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, 
+                 doubletpair, linewaves)
+        jac = "2-point"
+        
+    if len(Ifree) == 0:
+        fit_info = {'nfev': 0, 'status': 0}
+    else:
+        try:
+            fit_info = least_squares(objective, initial_guesses, args=farg, max_nfev=5000, 
+                                     xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
+                                     tr_solver='lsmr', tr_options={'regularize': True},
+                                     method='trf', bounds=tuple(zip(*bounds)))#, verbose=2)
+            parameters[Ifree] = fit_info.x
+        except:
+            if emfit.uniqueid:
+                errmsg = 'Problem in scipy.optimize.least_squares for {}.'.format(emfit.uniqueid)
+            else:
+                errmsg = 'Problem in scipy.optimize.least_squares.'
+            log.critical(errmsg)
+            raise RuntimeError(errmsg)
+
+        # If the narrow-line sigma didn't change by more than ~one km/s from
+        # its initial guess, then something has gone awry, so perturb the
+        # initial guess by 10% and try again. Examples where this matters:
+        #   fuji-sv3-bright-28119-39628390055022140
+        #   fuji-sv3-dark-25960-1092092734472204
+        S = np.where(emfit.sigma_param_bool[Ifree] * (linemodel['isbroad'][Ifree] == False))[0]
+        if len(S) > 0:
+            sig_init = initial_guesses[S]
+            sig_final = parameters[Ifree][S]
+            G = np.abs(sig_init - sig_final) < 1.
+            if np.any(G):
+                log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
+                initial_guesses[S[G]] *= 0.9
+                try:
+                    fit_info = least_squares(objective, initial_guesses, args=farg, max_nfev=5000, 
+                                             xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
+                                             tr_solver='lsmr', tr_options={'regularize': True},
+                                             method='trf', bounds=tuple(zip(*bounds)))#, verbose=2)
+                    parameters[Ifree] = fit_info.x
+                except:
+                    if emfit.uniqueid:
+                        errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
+                    else:
+                        errmsg = 'Problem in scipy.optimize.least_squares.'
+                    log.critical(errmsg)
+                    raise RuntimeError(errmsg)
+
+    t1 = time.time()
+    
+    # Conditions for dropping a parameter (all parameters, not just those
+    # being fitted):
+    # --negative amplitude or sigma
+    # --parameter at its default value (fit failed, right??)
+    # --parameter within 0.1% of its bounds
+    lineamps, linevshifts, linesigmas = np.array_split(parameters, 3) # 3 parameters per line
+    notfixed = np.logical_not(linemodel['fixed'])
+    
+    drop1 = np.hstack((lineamps < 0, np.zeros(len(linevshifts), bool), linesigmas <= 0)) * notfixed
+    
+    # Require equality, not np.isclose, because the optimization can be very
+    # small (<1e-6) but still significant, especially for the doublet
+    # ratios. If linesigma is dropped this way, make sure the corresponding
+    # line-amplitude is dropped, too (see MgII 2796 on
+    # sv1-bright-17680-39627622543528153).
+    drop2 = np.zeros(len(parameters), bool)
+    
+    amp_param_bool = emfit.amp_param_bool[Ifree]
+    I = np.where(parameters[Ifree][amp_param_bool] == 0)[0]
+    if len(I) > 0:
+        _Ifree = np.zeros(len(parameters), bool)
+        _Ifree[Ifree] = True
+        for pp in linemodel[Ifree][amp_param_bool][I]['param_name']:
+            J = np.where(_Ifree * (linemodel['param_name'] == pp.replace('_amp', '_sigma')))[0]
+            if len(J) > 0:
+                drop2[J] = True
+            K = np.where(_Ifree * (linemodel['param_name'] == pp.replace('_amp', '_vshift')))[0]
+            if len(K) > 0:
+                drop2[K] = True
+            #print(pp, J, K, np.sum(drop2))
+        
+    sigmadropped = np.where(emfit.sigma_param_bool * drop2)[0]
+    if len(sigmadropped) > 0:
+        for lineindx, dropline in zip(sigmadropped, linemodel[sigmadropped]['linename']):
+            # Check whether lines are tied to this line. If so, find the
+            # corresponding amplitude and drop that, too.
+            T = linemodel['tiedtoparam'] == lineindx
+            if np.any(T):
+                for tiedline in set(linemodel['linename'][T]):
+                    drop2[linemodel['param_name'] == '{}_amp'.format(tiedline)] = True
+            drop2[linemodel['param_name'] == '{}_amp'.format(dropline)] = True
+
+    vshiftdropped = np.where(emfit.vshift_param_bool * drop2)[0]
+    if len(vshiftdropped) > 0:
+        for lineindx, dropline in zip(vshiftdropped, linemodel[vshiftdropped]['linename']):
+            # Check whether lines are tied to this line. If so, find the
+            # corresponding amplitude and drop that, too.
+            T = linemodel['tiedtoparam'] == lineindx
+            if np.any(T):
+                for tiedline in set(linemodel['linename'][T]):
+                    drop2[linemodel['param_name'] == '{}_amp'.format(tiedline)] = True
+            drop2[linemodel['param_name'] == '{}_amp'.format(dropline)] = True
+
+    # It's OK for parameters to be *at* their bounds.
+    drop3 = np.zeros(len(parameters), bool)
+    drop3[Ifree] = np.logical_or(parameters[Ifree] < linemodel['bounds'][Ifree, 0], 
+                                 parameters[Ifree] > linemodel['bounds'][Ifree, 1])
+    drop3 *= notfixed
+        
+    log.debug('Dropping {} negative-amplitude lines.'.format(np.sum(drop1))) # linewidth can't be negative
+    log.debug('Dropping {} sigma,vshift parameters of zero-amplitude lines.'.format(np.sum(drop2)))
+    log.debug('Dropping {} parameters which are out-of-bounds.'.format(np.sum(drop3)))
+    Idrop = np.where(np.logical_or.reduce((drop1, drop2, drop3)))[0]
+        
+    if len(Idrop) > 0:
+        log.debug('  Dropping {} unique parameters.'.format(len(Idrop)))
+        parameters[Idrop] = 0.0
+            
+    # apply tied constraints
+    if len(Itied) > 0:
+        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+            parameters[I] = parameters[indx] * factor
+        
+    # Now loop back through and drop Broad balmer lines that:
+    #   (1) are narrower than their narrow-line counterparts;
+    #   (2) have a narrow line whose amplitude is smaller than that of the broad line
+    #      --> Deprecated! main-dark-32303-39628176678192981 is an example
+    #          of an object where there's a broad H-alpha line but no other
+    #          forbidden lines!
+
+    out_linemodel = linemodel.copy()
+    out_linemodel['value'] = parameters
+    out_linemodel.meta['nfev'] = fit_info['nfev']
+    out_linemodel.meta['status'] = fit_info['status']
+
+    # Get the final line-amplitudes, after resampling and convolution (see
+    # https://github.com/desihub/fastspecfit/issues/139). Some repeated code
+    # from build_emline_model...
+    if get_finalamp:
+        lineamps, linevshifts, linesigmas = np.array_split(parameters, 3) # 3 parameters per line
+        lineindxs = np.arange(len(lineamps))
+            
+        I = lineamps > 0
+        if np.count_nonzero(I) > 0:
+            linevshifts = linevshifts[I]
+            linesigmas = linesigmas[I]
+            lineamps = lineamps[I]
+            linewaves = linewaves[I]
+            lineindxs = lineindxs[I]
+            
+            # demand at least 20 km/s for rendering the model
+            if np.any(linesigmas) < 20.:
+                linesigmas[linesigmas<20.] = 20.
+                
+            if camerapix is None:
+                minwave = emlinewave[0][0]-2.
+                maxwave = emlinewave[-1][-1]+2.
+            else:
+                minwave = emlinewave[0]-2.
+                maxwave = emlinewave[-1]+2.
+                
+            _emlinewave = []
+            for icam, campix in enumerate(camerapix):
+                _emlinewave.append(emlinewave[campix[0]:campix[1]])
+
+            C_LIGHT = 299792.458
+            # line-width [log-10 Angstrom] and redshifted wavelength [log-10 Angstrom]
+            log10sigmas = linesigmas / C_LIGHT / np.log(10)                
+            linezwaves = np.log10(linewaves * (1.0 + redshift + linevshifts / C_LIGHT))
+        
+            for lineindx, lineamp, linezwave, log10sigma in zip(lineindxs, lineamps, linezwaves, log10sigmas):
+                log10wave = np.arange(linezwave - (5 * log10sigma), linezwave + (5 * log10sigma), emfit.dlog10wave)
+                log10wave = np.hstack((np.log10(minwave), log10wave, np.log10(maxwave)))
+                log10model = lineamp * np.exp(-0.5 * (log10wave-linezwave)**2 / log10sigma**2)
+                # Determine which camera we're on and then resample and
+                # convolve with the resolution matrix.
+                icam = np.argmin([np.abs((np.max(emwave)-np.min(emwave))/2+np.min(emwave)-10**linezwave) for emwave in _emlinewave])
+                model_resamp = trapz_rebin(10**log10wave, log10model, _emlinewave[icam])
+                model_convol = resolution_matrix[icam].dot(model_resamp)
+                out_linemodel['obsvalue'][lineindx] = np.max(model_convol)
+                
+    return out_linemodel, (t1 - t0)
+
+
 def fit_emlines(datadir='.', fast=False):
     """Use the current (main) version of the emission-line fitting code.
 
@@ -165,7 +383,8 @@ def fit_emlines(datadir='.', fast=False):
 
     t0 = time.time()    
     specdata = read_test_data(datadir=datadir)
-    log.info(f'Gathering the data took {time.time()-t0:.2f} seconds.')
+    t1 = time.time()
+    log.info(f'Gathering the data took {t1-t0:.2f} seconds.')
 
     # loop on each spectrum
     for iobj, data in enumerate(specdata):
@@ -176,113 +395,45 @@ def fit_emlines(datadir='.', fast=False):
         redshift = data['zredrock']
         emlinewave = data['wave']
         emlineflux = data['flux'] # we already subtracted the continuum for this test
-
-        # temporary hack!
-        _emlinewave = np.hstack(emlinewave)
-        _emlineflux = np.hstack(emlineflux)
-
+        emlinewave = np.hstack(emlinewave)
+        emlineflux = np.hstack(emlineflux)
+        
         # Build all the emission-line models for this object.
         linemodel_broad, linemodel_nobroad = EMFit.build_linemodels(
-            redshift, wavelims=(np.min(_emlinewave)+5, np.max(_emlinewave)-5),
+            redshift, wavelims=(np.min(emlinewave)+5, np.max(emlinewave)-5),
             verbose=False, strict_broadmodel=True)
 
         # Get initial guesses on the parameters and populate the two "initial"
         # linemodels; the "final" linemodels will be initialized with the
         # best-fitting parameters from the initial round of fitting.
         initial_guesses, param_bounds = EMFit.initial_guesses_and_bounds(
-            data, _emlinewave, _emlineflux, log=log)
-    
+            data, emlinewave, emlineflux, log=log)
+        
         EMFit.populate_linemodel(linemodel_nobroad, initial_guesses, param_bounds, log=log)
         #EMFit.populate_linemodel(linemodel_broad, initial_guesses, param_bounds, log=log)
+        
+        emlineivar = np.hstack(data['ivar'])
+        camerapix = data['camerapix']
+        resolution_matrix = data['res']
+        
+        weights = np.sqrt(emlineivar)
+        
+        # run once without timing to ensure that JIT happens
 
-        # Initial fit - initial_linemodel_nobroad
-        if fast:
-            from scipy.optimize import least_squares
-            from FasterSpecFit.emlines_sparse_custom import build_emline_model, _objective, _jacobian
-
-            # do not stack the cameras
-            emlinewave_edges = data['wave_edges']
-            logemlinewave_edges = data['logwave_edges']
-            #emlineivar = data['ivar']
-            emlineweights = data['weights']
-            resolution_matrix = data['res_numpy']
-
-            # unpack the linemodel
-            parameters, (Ifree, Itied, tiedtoparam, tiedfactor, bounds, doubletindx, doubletpair, \
-                         linewaves) = EMFit._linemodel_to_parameters(linemodel_nobroad, EMFit.fit_linetable)
-
-            free_parameters = parameters[Ifree]
-
-            farg = (emlineflux, emlineweights, emlinewave_edges, logemlinewave_edges,
-                    resolution_matrix, redshift, linewaves,
-                    parameters, Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, doubletpair)
-
-            t0 = time.time()
-            try:
-                fit_nobroad = least_squares(_objective,
-                                            free_parameters,
-                                            #jac=_jacobian,
-                                            bounds=tuple(zip(*bounds)),
-                                            args=farg,
-                                            max_nfev=5000,
-                                            xtol=1e-10,
-                                            method="trf",
-                                            #verbose=2,
-                                            # x_scale="jac",
-                                            tr_solver="lsmr",
-                                            tr_options={"regularize": True})
-                log.info('Line-fitting with no broad lines took {:.4f} seconds [niter={}].'.format(
-                    time.time()-t0, fit_nobroad['nfev']))
-            except:
-                log.warning(f'Problem fitting object index {iobj}')
-                import traceback
-                traceback.print_exc()
-
-            parameters[Ifree] = fit_nobroad.x
-            if len(Itied) > 0:
-                for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
-                    parameters[I] = parameters[indx] * factor
-
-            # fragile!
-            parameters[doubletindx] *= parameters[doubletpair]
-
-            # quick QA
-            model = []
-            for icam in range(len(emlineflux)):
-                _model = build_emline_model(parameters,
-                                            emlinewave_edges[icam],
-                                            logemlinewave_edges[icam],
-                                            resolution_matrix[icam],
-                                            redshift,
-                                            linewaves)
-                model.append(_model)
-            model = np.hstack(model)
-
-            ## quick QA
-            #import matplotlib.pyplot as plt
-            #plt.clf()
-            #plt.plot(_emlinewave, _emlineflux)
-            #plt.plot(_emlinewave, model, color='red')
-            #plt.xlim(8000, 8500)
-            #plt.savefig(f'ioannis/tmp/qa-fastspec-{data["uniqueid"]}.png')
-            #import pdb ; pdb.set_trace()
-
-        else:
-            emlinewave = np.hstack(emlinewave)
-            emlineflux = np.hstack(emlineflux)
-            emlineivar = np.hstack(data['ivar'])
-            camerapix = data['camerapix']
-            weights = np.sqrt(emlineivar)
-            resolution_matrix = data['res']
+        if fast and iobj == 0:
+            emfit_optimize(EMFit, linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
+                           resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True,
+                           fast=fast)
             
-            t0 = time.time()
-            fit_nobroad = EMFit.optimize(linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
-                                         resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True)
-            model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
-            chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-            log.info('Line-fitting with no broad lines and {} free parameters took {:.4f} seconds [niter={}, rchi2={:.4f}].'.format(
-                nfree_nobroad, time.time()-t0, fit_nobroad.meta['nfev'], chi2_nobroad))
-
+        fit_nobroad, t_elapsed = emfit_optimize(EMFit, linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
+                                                resolution_matrix, camerapix, log=log, debug=False, get_finalamp=True,
+                                                fast=fast)
+        
+        model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
+        chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
+        log.info(f'{iobj}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_elapsed:.4f} seconds '
+                 f'[niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
+                
         # write out...
 
     

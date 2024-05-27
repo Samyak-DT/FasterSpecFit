@@ -84,7 +84,6 @@ def norm_cdf(a):
 def build_emline_model(parameters,
                        obs_bin_edges,
                        log_obs_bin_edges,
-                       resolution_matrix,
                        redshift,
                        line_wavelengths):
     
@@ -165,12 +164,72 @@ def build_emline_model(parameters,
         # add bin avgs for this peak to the full array
         model_fluxes[lo:hi+1] += edge_vals[:nedges-1] 
         
-    # missing step -- apply the resolution matrix
-    
     # trim off left and right dummy values before returning
     return model_fluxes[1:-1]
 
 
+
+#
+# Objective function for least-squares optimization Build the emline
+# model as described above and compute the weighted vector of
+# residuals between the modeled fluxes and the observations.
+#
+# *args contains the fixed arguments to build_emline_model()
+#
+#@jit(nopython=True, fastmath=False, nogil=True)
+def _objective(free_parameters,
+               obs_bin_edges,
+               log_obs_bin_edges,
+               obs_fluxes,
+               obs_weights,
+               redshift,
+               line_wavelengths,
+               resolution_matrix,
+               camerapix,
+               parameters,
+               Ifree,
+               Itied,
+               tiedtoparam,
+               tiedfactor,
+               doubletindx,
+               doubletpair):
+
+    #
+    # expand free paramters into complete
+    # parameter array, handling tied params
+    # and doublets
+    #
+    
+    parameters[Ifree] = free_parameters
+    if len(Itied) > 0:
+        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+            parameters[I] = parameters[indx] * factor
+    
+    # fragile! assumes the amplitudes are always first...
+    parameters[doubletindx] *= parameters[doubletpair]
+
+    model_fluxes = np.empty_like(obs_fluxes)
+    
+    for icam, campix in enumerate(camerapix):
+
+        # start and end for obs fluxes of camera icam
+        s = campix[0]
+        e = campix[1]
+        
+        mf = build_emline_model(parameters,
+                                obs_bin_edges[s+icam:e+icam+1],
+                                log_obs_bin_edges[s+icam:e+icam+1],
+                                redshift,
+                                line_wavelengths)
+        
+        model_fluxes[s:e] = resolution_matrix[icam].dot(mf)
+    
+    residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
+    
+    return residuals
+
+
+"""
 # replacement for np.tile, which is not supported by Numba
 @jit(nopython=True, fastmath=True, nogil=True)
 def mytile(a, n):
@@ -339,56 +398,7 @@ def _jacobian(parameters,
     return EMLineSparseArray((len(obs_fluxes), len(parameters)),
                              starts, ends, dd)
 
-
-#
-# Objective function for least-squares optimization Build the emline
-# model as described above and compute the weighted vector of
-# residuals between the modeled fluxes and the observations.
-#
-# *args contains the fixed arguments to build_emline_model()
-#
-#@jit(nopython=True, fastmath=False, nogil=True)
-def _objective(free_parameters,
-               obs_fluxes,
-               obs_weights,
-               obs_bin_edges,
-               log_obs_bin_edges,
-               resolution_matrix,
-               redshift,
-               line_wavelengths,
-               parameters,
-               Ifree,
-               Itied,
-               tiedtoparam,
-               tiedfactor,
-               doubletindx,
-               doubletpair):
-
-    # Moustakas - handle tied parameters and doublets
-    parameters[Ifree] = free_parameters
-    if len(Itied) > 0:
-        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
-            parameters[I] = parameters[indx] * factor
-
-    # fragile! assumes the amplitudes are always first...
-    parameters[doubletindx] *= parameters[doubletpair]
-
-    # per-camera residuals
-    residuals = [] # numba doesn't like lists and np.hstack!
-    for icam in range(len(obs_fluxes)):
-        model_fluxes = build_emline_model(parameters,
-                                          obs_bin_edges[icam],
-                                          log_obs_bin_edges[icam],
-                                          resolution_matrix[icam],
-                                          redshift,
-                                          line_wavelengths)
-
-        resid = obs_weights[icam] * (obs_fluxes[icam] - model_fluxes) # data minus model
-        residuals.append(resid)
-        
-    residuals = np.hstack(residuals)
-
-    return residuals
+"""
 
 
 #
@@ -396,18 +406,29 @@ def _objective(free_parameters,
 # Convert N bin centers to N+1 bin edges.  Edges are placed
 # halfway between centers, with extrapolation at the ends.
 #
-def centers_to_edges(centers):
+def centers_to_edges(centers, camerapix):
 
-    #- Interior edges are just points half way between bin centers
-    int_edges = 0.5 * (centers[:-1] + centers[1:])
+    ncameras = camerapix.shape[0]
+    edges = np.empty(len(centers) + ncameras, dtype=centers.dtype)
     
-    #- edge edges are extrapolation of interior bin sizes
-    edge_l = centers[ 0] - (centers[ 1] - int_edges[ 0])
-    edge_r = centers[-1] + (centers[-1] - int_edges[-1])
-    
-    return np.hstack((edge_l, int_edges, edge_r))
+    for icam, campix in enumerate(camerapix):
 
+        s = campix[0]
+        e = campix[1]
+        icenters = centers[s:e]
+        
+        #- interior edges are just points half way between bin centers
+        int_edges = 0.5 * (icenters[:-1] + icenters[1:])
+        
+        #- exterior edges are extrapolation of interior bin sizes
+        edge_l = icenters[ 0] - (icenters[ 1] - int_edges[ 0])
+        edge_r = icenters[-1] + (icenters[-1] - int_edges[-1])
 
+        edges[s+icam:e+icam+1] = np.hstack((edge_l, int_edges, edge_r))
+
+    return edges
+
+"""
 #
 # emlines()
 # Fit a set of noisy flux measurements to an underlying collection of
@@ -477,3 +498,4 @@ def emlines(obs_wavelengths,
     objval = fit_info.cost
     
     return fitted_amplitudes, fitted_vshifts, fitted_sigmas, objval
+"""
