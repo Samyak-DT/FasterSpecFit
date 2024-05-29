@@ -399,7 +399,7 @@ def _jacobian(parameters,
 
 
 #
-# centes_to_edges()
+# centers_to_edges()
 # Convert N bin centers to N+1 bin edges.  Edges are placed
 # halfway between centers, with extrapolation at the ends.
 #
@@ -427,75 +427,3 @@ def centers_to_edges(centers, camerapix):
                                             np.array((edge_r,))))
 
     return edges
-
-"""
-#
-# emlines()
-# Fit a set of noisy flux measurements to an underlying collection of
-# spectral lines, assigning an amplitude to each line.
-#
-# INPUTS:
-# obs_wavelengths: vector of wavelengths at which flux was measured
-# obs_fluxes:      fluxes at each observed wavelength
-# obs_ivar:        1/variance of flux of each observed wavelength
-#
-# redshift:       redshift of object's spectrum
-# line_wavelengths: wavelengths of spectral lines being fit to data
-#
-# RETURNS:
-# fitted line amplitudes, fitted velocity shift, fitted width,
-# objective value
-#
-def emlines(obs_wavelengths,
-            obs_fluxes,
-            obs_ivar,
-            redshift,
-            line_wavelengths):
-    
-    # statistical weights of observed fluxes
-    obs_weights = np.sqrt(obs_ivar)
-    obs_bin_edges = centers_to_edges(obs_wavelengths)
-    farg = (
-        obs_fluxes,
-        obs_weights,
-        obs_bin_edges,
-        np.log(obs_bin_edges),
-        redshift,
-        line_wavelengths,
-    )
-    
-    # initial guesses for parameters
-    init_amplitudes = np.full_like(line_wavelengths, 1.)
-    init_vshifts    = np.full_like(line_wavelengths, 0.)
-    init_sigmas     = np.full_like(line_wavelengths, 75.)
-        
-    init_vals = np.hstack((init_amplitudes, init_vshifts, init_sigmas))
-    
-    # lower and upper bounds for params
-    # lower and upper bounds for params
-    n = len(line_wavelengths)
-    bounds_min =  [0.]   * n + [-100.] * n + [  0.]  * n
-    bounds_max =  [1e+3] * n + [+100.] * n + [500.]  * n
-    
-    # optimize!
-    fit_info = least_squares(_objective,
-                             init_vals,
-                             jac=_jacobian,
-                             bounds=[bounds_min, bounds_max],
-                             args=farg,
-                             max_nfev=5000,
-                             xtol=1e-10,
-                             method="trf",
-                             #verbose=2,
-                             # x_scale="jac",
-                             tr_solver="lsmr",
-                             tr_options={"regularize": True})
-
-    # extract solution
-    params = fit_info.x
-    fitted_amplitudes, fitted_vshifts, fitted_sigmas = \
-        np.array_split(params, 3)
-    objval = fit_info.cost
-    
-    return fitted_amplitudes, fitted_vshifts, fitted_sigmas, objval
-"""

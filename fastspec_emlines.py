@@ -54,14 +54,14 @@ def read_test_data(datadir='.'):
     meta = hstack((fm, zb))#, tsnr2))    
 
     # pack into a dictionary - fastspecfit.io.DESISpectra().read_and_unpack()
-
+    
     # Coadd across cameras.
     coadd_spec = coadd_cameras(spec)
-
+    
     # unpack the desispec.spectra.Spectra objects into simple arrays
     cameras = spec.bands                # ['b', 'r', 'z']
     coadd_cameras = coadd_spec.bands[0] # 'brz'
-
+    
     data = []
     for iobj in np.arange(len(meta)):
         specdata = {
@@ -89,7 +89,7 @@ def read_test_data(datadir='.'):
             mask = spec.mask[cam][iobj, :]
             res_numpy = spec.resolution_data[cam][iobj, :, :]
             res = Resolution(res_numpy)
-
+            
             # this is where we would correct for dust
             # ...
 
@@ -180,23 +180,6 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     # The only difference between the old and new emline fitting is in the
     # arguments passed to the least_squares method
     if fast:
-
-        """
-        robs_fluxes = np.empty_like(emlineflux)
-        for icam, campix in enumerate(camerapix):
-            # start and end for obs fluxes of camera icam
-            s = campix[0]
-            e = campix[1]
-            
-            M = resolution_matrix[icam]
-            A = M.todense()
-            print("BEGIN")
-            for i in range(A.shape[0]):
-                print(i, np.max(np.abs(A[i])))
-            
-            robs_fluxes[s:e] = solve(A, emlineflux[s:e])
-            #robs_fluxes[s:e] = spsolve(resolution_matrix[icam].tocsr(), emlineflux[s:e])
-        """
         
         obs_bin_edges = centers_to_edges(emlinewave, camerapix)
         farg = (obs_bin_edges, np.log(obs_bin_edges), emlineflux,
