@@ -10,8 +10,6 @@ from scipy.optimize import least_squares
 
 from numba import jit
 
-#import scipy.sparse as sp
-#from .sparse_rep import EMLineSparseArray
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
@@ -166,11 +164,10 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
 
 
 #
-# Objective function for least-squares optimization Build the emline
-# model as described above and compute the weighted vector of
-# residuals between the modeled fluxes and the observations.
+# Objective function for least-squares optimization
 #
-# *args contains the fixed arguments to build_emline_model()
+# Build the emline model as described above and compute the weighted
+# vector of residuals between the modeled fluxes and the observations.
 #
 #@jit(nopython=True, fastmath=False, nogil=True)
 def _objective(free_parameters,
@@ -180,7 +177,7 @@ def _objective(free_parameters,
                obs_weights,
                redshift,
                line_wavelengths,
-               resolution_matrix,
+               resolution_matrices,
                camerapix,
                parameters,
                Ifree,
@@ -219,14 +216,18 @@ def _objective(free_parameters,
                                 redshift,
                                 line_wavelengths)
         
-        model_fluxes[s:e] = np.maximum(0., resolution_matrix[icam].dot(mf))
+        #model_fluxes[s:e] = np.maximum(0., resolution_matrices[icam].dot(mf))
+        model_fluxes[s:e] = resolution_matrices[icam].dot(mf)
         
-    residuals = obs_weights * (obs_fluxes - model_fluxes) # data minus model
+    residuals = obs_weights * (model_fluxes - obs_fluxes) # model minus data
     
     return residuals
 
 
-"""
+###############################################################################
+
+from .sparse_rep import EMLineIdealJacobian, EMLineJacobian, ParamsMapping
+
 # replacement for np.tile, which is not supported by Numba
 @jit(nopython=True, fastmath=True, nogil=True)
 def mytile(a, n):
@@ -251,21 +252,17 @@ def mytile(a, n):
 # Jacobian as a *dense* matrix (Numba does not support scipy.sparse)
 #
 @jit(nopython=True, fastmath=True, nogil=True)
-def build_emline_model_jacobian(parameters,
+def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
                                 obs_weights,
                                 obs_bin_edges,
                                 log_obs_bin_edges,
-                                resolution_matrix,
                                 redshift,
                                 line_wavelengths):
-    
+
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
-    
-    line_amplitudes, line_vshifts, line_sigmas = \
-        np.array_split(parameters, 3)
-        
-    w = np.hstack((np.array([0.]), obs_weights / np.diff(obs_bin_edges)))
+
+    w = np.hstack((np.array([0.]), 1. / np.diff(obs_bin_edges)))
     
     max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
@@ -366,10 +363,7 @@ def build_emline_model_jacobian(parameters,
         
         # one past last valid entry
         ends[j] = hi
-    
-    # missing step -- apply the resolution matrix
-    print('ToDo: apply the resolution matrix here!')
-    
+
     return (mytile(starts, 3), mytile(ends, 3), dd)
     
 
@@ -379,24 +373,68 @@ def build_emline_model_jacobian(parameters,
 # to a sparse matrix, since it is extremely sparse, to speed up
 # subsequent matrix-vector multiplies in the optimizer.
 #
-# *args contains the fixed arguments to build_emline_model()
-# which are all used in the Jacobian calculation.
-#
-def _jacobian(parameters,
-              obs_fluxes,  # not used
+def _jacobian(free_parameters,
+              obs_bin_edges,
+              log_obs_bin_edges,
+              obs_fluxes,
               obs_weights,
-              *args):
+              redshift,
+              line_wavelengths,
+              resolution_matrices,
+              camerapix,
+              parameters,
+              Ifree,
+              Itied,
+              tiedtoparam,
+              tiedfactor,
+              doubletindx,
+              doubletpair):
 
-    starts, ends, dd = \
-        build_emline_model_jacobian(parameters,
-                                    obs_weights,
-                                    *args)
+    #
+    # expand free paramters into complete
+    # parameter array, handling tied params
+    # and doublets
+    #
+
+    parameters[Ifree] = free_parameters
+    if len(Itied) > 0:
+        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
+            parameters[I] = parameters[indx] * factor
     
-    return EMLineSparseArray((len(obs_fluxes), len(parameters)),
-                             starts, ends, dd)
+    lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
+    
+    # doublets
+    lineamps[doubletindx] *= lineamps[doubletpair]
+    
+    # construct the jacobian of mapping from free to full params
+    mapping = ParamsMapping(len(parameters),
+                            Ifree, Itied, tiedtoparam, tiedfactor,
+                            doubletindx, doubletpair)
+    J_S = mapping.getJacobian(free_parameters)
 
-"""
+    idealJacs = []
 
+    for icam, campix in enumerate(camerapix):
+        s = campix[0]
+        e = campix[1]
+        
+        starts, ends, dd = \
+            build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
+                                        obs_weights[s:e],
+                                        obs_bin_edges[s+icam:e+icam+1],
+                                        log_obs_bin_edges[s+icam:e+icam+1],
+                                        redshift,
+                                        line_wavelengths)
+        
+        
+        idealJac =  EMLineIdealJacobian((e - s, len(parameters)),
+                                        starts, ends, dd)
+
+        idealJacs.append(idealJac)
+        
+    return EMLineJacobian(camerapix, obs_weights, resolution_matrices, idealJacs, J_S)
+
+###############################################################################
 
 #
 # centers_to_edges()

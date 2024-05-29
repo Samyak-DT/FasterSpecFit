@@ -170,7 +170,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     from fastspecfit.util import trapz_rebin
     if fast:
         #from scipy.sparse.linalg import spsolve
-        from FasterSpecFit import centers_to_edges
+        from FasterSpecFit import centers_to_edges, _jacobian
         from FasterSpecFit import _objective as objective
     else:
         from fastspecfit.emlines import _objective_function as objective
@@ -185,8 +185,24 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
         farg = (obs_bin_edges, np.log(obs_bin_edges), emlineflux,
                 weights, redshift, linewaves, resolution_matrix, camerapix, parameters, ) + \
                 (Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, doubletpair)
-        jac = "2-point"
-        
+        jac = _jacobian # "2-point"
+        """
+        J1 = _jacobian(initial_guesses, *farg).dot(np.eye(len(initial_guesses)))
+        J0 = np.empty(J1.shape)
+        for i in range(J1.shape[1]):
+            ig1 = initial_guesses.copy()
+            ig1[i] -= 0.00001
+            ig2 = initial_guesses.copy()
+            ig2[i] += 0.00001
+            vp1 = objective(ig1, *farg)
+            vp2 = objective(ig2, *farg)
+            J0[:,i] = (vp2 - vp1)/(2*0.00001)
+            print(i, np.max(np.abs(J0[:,i] - J1[:,i])))
+            #for j in range(J1.shape[0]):
+            #    if np.abs(J0[j][i] - J1[j][i]) > 1e-6:
+            #        print(j, i, J0[j,i], J1[j,i])
+        """
+        #print("BEGIN")
     else:
         
         farg = (emlinewave, emlineflux, weights, redshift, emfit.dlog10wave, 
@@ -199,10 +215,11 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
         fit_info = {'nfev': 0, 'status': 0}
     else:
         try:
-            fit_info = least_squares(objective, initial_guesses, args=farg, max_nfev=5000, 
+            fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
                                      xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
                                      tr_solver='lsmr', tr_options={'regularize': True},
                                      method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
+            #print("END")
             parameters[Ifree] = fit_info.x
 
             # NB: after running least_squares,
@@ -232,7 +249,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
                 initial_guesses[S[G]] *= 0.9
                 try:
-                    fit_info = least_squares(objective, initial_guesses, args=farg, max_nfev=5000, 
+                    fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
                                              xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
                                              tr_solver='lsmr', tr_options={'regularize': True},
                                              method='trf', bounds=tuple(zip(*bounds)))#, verbose=2)

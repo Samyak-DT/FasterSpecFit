@@ -4,14 +4,72 @@ import scipy.sparse as sp
 from numba import jit
 
 
+class ParamsMapping(object):
+
+    def __init__(self, nParms,
+                 freeParms, tiedParms, tiedSources, tiedFactors,
+                 doubletRatios, doubletSources):
+
+        nFree = len(freeParms)
+        
+        J_S = np.zeros((nParms, nFree))
+        
+        # permutation mapping each free parameter in full list
+        # to its location in free list
+        p = np.empty(nParms, dtype=np.int32)
+        p[freeParms] = np.arange(nFree, dtype=np.int32)
+        
+        # free params present unchanged in full list
+        for j in freeParms:
+            J_S[j,p[j]] = 1.
+
+        # tied params
+        for j, src_j, factor in zip(tiedParms, tiedSources, tiedFactors):
+            if src_j not in freeParms:
+                #print(f"SOURCE {src_j} tied to {j} is not free!")
+                # if source is fixed, so is target, so Jacobian contrib is 0
+                pass
+            else:
+                J_S[j, p[src_j]] = factor
+        
+        # create placeholders for doublets in sparse structure
+        # and record ops needed to compute Jacobian for given free params
+        doubletPatches = np.empty((len(doubletRatios), 3), dtype=np.int32)
+        idx = 0
+        for (j, src_j) in zip(doubletRatios, doubletSources):
+            #if j not in freeParms:
+            #    print(f"ratio {j} in doublet with {src_j} is not free!")
+            #if src_j not in freeParms:
+            #    print(f"amplitude {src_j} in doublet with {j} is not free!")
+
+            if j not in freeParms or src_j not in freeParms:
+                continue
+            
+            J_S[j,p[src_j]] = 1. # will set to v[j]
+            J_S[j,p[j]]     = 1. # will set to v[src_j]
+            doubletPatches[idx] = np.array([j, p[src_j], p[j]])
+            idx += 1
+            
+        self.J_S = sp.csr_array(J_S)
+        self.doubletPatches = doubletPatches[:idx,:]
+        
+    # evaluate Jacobian at v = freeParms
+    def getJacobian(self, freeParms):
+        for j, j_free, src_j_free in self.doubletPatches:
+            self.J_S[j, j_free]     = freeParms[src_j_free]
+            self.J_S[j, src_j_free] = freeParms[j_free]
+        
+        return self.J_S
+
+    
 #
 # Sparse representation customized to the
-# structure of the emline fitting Jacobian.
+# structure of the emline fitting ideal Jacobian.
 # This representation is produced directly by
-# our Jacobian calculation.
+# our ideal Jacobian calculation.
 #
 
-class EMLineSparseArray(sp.linalg.LinearOperator):
+class EMLineIdealJacobian(sp.linalg.LinearOperator):
     
     # 'values' is a 2D array whose ith row contains
     # the nonzero values in column i of the matrix.
@@ -99,3 +157,61 @@ class EMLineSparseArray(sp.linalg.LinearOperator):
                                 self.values,
                                 self.shape[0],
                                 X)
+
+    
+class EMLineJacobian(sp.linalg.LinearOperator):
+
+    def __init__(self, camerapix, obs_weights, resMatrices, idealJacs, J_S):
+
+        nFreeParms = J_S.shape[1]
+        
+        nBins      = 0
+        for resM in resMatrices:
+            nBins += resM.shape[0]
+
+        self.camerapix   = camerapix
+        self.obs_weights = obs_weights
+        self.resMatrices = resMatrices
+        self.idealJacs   = idealJacs
+        self.J_S         = J_S
+        
+        super().__init__(J_S.dtype, (nBins, nFreeParms))
+        
+
+    # |v| = number of free parameters
+    def _matvec(self, v):
+
+        nBins = self.shape[0]
+        
+        w = np.empty(nBins, dtype=v.dtype)
+        
+        vFull = self.J_S.dot(v.ravel())
+        
+        for campix, iJac, resM in zip(self.camerapix, self.idealJacs, self.resMatrices):
+            s = campix[0]
+            e = campix[1]
+            
+            vJac = iJac._matvec(vFull)
+            w[s:e] = resM.dot(vJac)
+            
+        return self.obs_weights * w
+
+    # |v| = number of observable bins
+    def _rmatvec(self, v):
+
+        nFreeParms = self.shape[1]
+        
+        w = np.zeros(nFreeParms, dtype=v.dtype)
+        v0 = v * self.obs_weights
+        for campix, iJac, resM in zip(self.camerapix, self.idealJacs, self.resMatrices):
+            s = campix[0]
+            e = campix[1]
+
+            vSub = v0[s:e]
+            vRes = resM.T.dot(vSub)
+            vJac = iJac._rmatvec(vRes)
+
+            vFreeParms = self.J_S.T.dot(vJac)
+            w += vFreeParms
+
+        return w
