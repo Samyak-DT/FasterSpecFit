@@ -10,6 +10,7 @@ from scipy.optimize import least_squares
 
 from numba import jit
 
+from .sparse_rep import resMul
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
@@ -217,7 +218,7 @@ def _objective(free_parameters,
                                 line_wavelengths)
         
         #model_fluxes[s:e] = np.maximum(0., resolution_matrices[icam].dot(mf))
-        model_fluxes[s:e] = resolution_matrices[icam].dot(mf)
+        model_fluxes[s:e] = resMul(resolution_matrices[icam], mf)
         
     residuals = obs_weights * (model_fluxes - obs_fluxes) # model minus data
     
@@ -226,7 +227,7 @@ def _objective(free_parameters,
 
 ###############################################################################
 
-from .sparse_rep import EMLineIdealJacobian, EMLineJacobian, ParamsMapping
+from .sparse_rep import mulWMJ, EMLineJacobian, ParamsMapping
 
 # replacement for np.tile, which is not supported by Numba
 @jit(nopython=True, fastmath=True, nogil=True)
@@ -412,13 +413,13 @@ def _jacobian(free_parameters,
                             doubletindx, doubletpair)
     J_S = mapping.getJacobian(free_parameters)
 
-    idealJacs = []
+    jacs = []
 
     for icam, campix in enumerate(camerapix):
         s = campix[0]
         e = campix[1]
         
-        starts, ends, dd = \
+        idealJac = \
             build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
                                         obs_weights[s:e],
                                         obs_bin_edges[s+icam:e+icam+1],
@@ -426,13 +427,10 @@ def _jacobian(free_parameters,
                                         redshift,
                                         line_wavelengths)
         
+        jac = mulWMJ(obs_weights[s:e], resolution_matrices[icam], idealJac)
+        jacs.append(jac)
         
-        idealJac =  EMLineIdealJacobian((e - s, len(parameters)),
-                                        starts, ends, dd)
-
-        idealJacs.append(idealJac)
-        
-    return EMLineJacobian(camerapix, obs_weights, resolution_matrices, idealJacs, J_S)
+    return EMLineJacobian(camerapix, jacs, J_S)
 
 ###############################################################################
 
