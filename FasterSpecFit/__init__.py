@@ -1,3 +1,3 @@
-from .emlines_sparse_custom import _objective, _jacobian, centers_to_edges
-from .sparse_rep import dia_to_row_matrix
+from .emlines_objective import EMLine_objective, EMLine_jacobian, bin_centers_to_edges
+from .sparse_rep import ResMatrix
 from .params_mapping import ParamsMapping

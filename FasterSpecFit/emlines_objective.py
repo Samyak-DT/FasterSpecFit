@@ -1,21 +1,20 @@
 #
-# Multicore implementation of spectral fitting via Gaussian
-# integration.
+# Calculation of objective function and
+# Jacobian for emission line fitting
 #
 
 import numpy as np
 from math import erf, erfc
 
-from scipy.optimize import least_squares
-
 from numba import jit
 
-from .sparse_rep import resMul
 from .params_mapping import ParamsMapping
+from .sparse_rep import EMLineJacobian
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
 MAX_SDEV = 5.
+
 
 #
 # norm_pdf()
@@ -57,6 +56,55 @@ def norm_cdf(a):
             y = 1.0 - y
     
     return y
+
+
+##############################################################
+
+#
+# Objective function for least-squares optimization
+#
+# Build the emline model as described above and compute the weighted
+# vector of residuals between the modeled fluxes and the observations.
+#
+def EMLine_objective(free_parameters,
+                     obs_bin_edges,
+                     log_obs_bin_edges,
+                     obs_fluxes,
+                     obs_weights,
+                     redshift,
+                     line_wavelengths,
+                     resolution_matrices,
+                     camerapix,
+                     params_mapping):
+
+    #
+    # expand free paramters into complete
+    # parameter array, handling tied params
+    # and doublets
+    #
+    
+    parameters = params_mapping.mapFreeToFull(free_parameters)
+    lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
+    
+    model_fluxes = np.empty_like(obs_fluxes)
+    for icam, campix in enumerate(camerapix):
+
+        # start and end for obs fluxes of camera icam
+        s = campix[0]
+        e = campix[1]
+        
+        mf = build_emline_model(lineamps, linevshifts, linesigmas,
+                                obs_bin_edges[s+icam:e+icam+1],
+                                log_obs_bin_edges[s+icam:e+icam+1],
+                                redshift,
+                                line_wavelengths)
+
+        # convolve model with resolution matrix and store in
+        # this camera's subrange of model_fluxes
+        resolution_matrices[icam].matvec(mf, model_fluxes[s:e])
+        
+    return obs_weights * (model_fluxes - obs_fluxes) # residuals
+
 
 
 #
@@ -169,24 +217,25 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
     return model_fluxes[1:-1]
 
 
-#
-# Objective function for least-squares optimization
-#
-# Build the emline model as described above and compute the weighted
-# vector of residuals between the modeled fluxes and the observations.
-#
-#@jit(nopython=True, fastmath=False, nogil=True)
-def _objective(free_parameters,
-               obs_bin_edges,
-               log_obs_bin_edges,
-               obs_fluxes,
-               obs_weights,
-               redshift,
-               line_wavelengths,
-               resolution_matrices,
-               camerapix,
-               params_mapping):
+###############################################################################
 
+#
+# Jacobian of objective function for least-squares EMLine
+# optimization. The result of the detailed calculation is converted
+# to a sparse matrix, since it is extremely sparse, to speed up
+# subsequent matrix-vector multiplies in the optimizer.
+#
+def EMLine_jacobian(free_parameters,
+                    obs_bin_edges,
+                    log_obs_bin_edges,
+                    obs_fluxes, # not used, but must match objective
+                    obs_weights,
+                    redshift,
+                    line_wavelengths,
+                    resolution_matrices,
+                    camerapix,
+                    params_mapping):
+    
     #
     # expand free paramters into complete
     # parameter array, handling tied params
@@ -196,39 +245,28 @@ def _objective(free_parameters,
     parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
-    model_fluxes = np.empty_like(obs_fluxes)
-    for icam, campix in enumerate(camerapix):
+    J_S = params_mapping.getJacobian(free_parameters)
 
-        # start and end for obs fluxes of camera icam
+    jacs = []
+    for icam, campix in enumerate(camerapix):
         s = campix[0]
         e = campix[1]
         
-        mf = build_emline_model(lineamps, linevshifts, linesigmas,
-                                obs_bin_edges[s+icam:e+icam+1],
-                                log_obs_bin_edges[s+icam:e+icam+1],
-                                redshift,
-                                line_wavelengths)
-
-        # convolve model with resolution matrix and store in
-        # this camera's subrange of model_fluxes
-        resMul(resolution_matrices[icam], mf, model_fluxes[s:e])
+        idealJac = \
+            build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
+                                        obs_bin_edges[s+icam:e+icam+1],
+                                        log_obs_bin_edges[s+icam:e+icam+1],
+                                        redshift,
+                                        line_wavelengths)
         
-    return obs_weights * (model_fluxes - obs_fluxes) # residuals
+        jacs.append( mulWMJ(obs_weights[s:e],
+                            resolution_matrices[icam].data,
+                            idealJac) )
+        
     
-
-
-###############################################################################
-
-from .sparse_rep import mulWMJ, EMLineJacobian
-
-# replacement for np.tile, which is not supported by Numba
-@jit(nopython=True, fastmath=True, nogil=True)
-def mytile(a, n):
-    sz = len(a)
-    r = np.empty(n * sz, dtype=a.dtype)
-    for i in range(n):
-        r[i*sz:(i+1)*sz] = a
-    return r
+    nBins = np.sum(camerapix[:,1] - camerapix[:,0])
+    nFreeParms = len(free_parameters)
+    return EMLineJacobian((nBins, nFreeParms), camerapix, jacs, J_S)
 
 
 #
@@ -362,67 +400,89 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
             # bin hi - 1 is valid
             ends[j] = hi
 
-    return (mytile(starts, 3), mytile(ends, 3), dd)
-    
+    return (mytile(starts, 3), mytile(ends, 3), dd)    
+
+
+# replacement for np.tile, which is not supported by Numba
+@jit(nopython=True, fastmath=True, nogil=True)
+def mytile(a, n):
+    sz = len(a)
+    r = np.empty(n * sz, dtype=a.dtype)
+    for i in range(n):
+        r[i*sz:(i+1)*sz] = a
+    return r
+
 
 #
-# Jacobian of objective bjective function for least-squares
-# optimization. The result of the detailed calculation is converted
-# to a sparse matrix, since it is extremely sparse, to speed up
-# subsequent matrix-vector multiplies in the optimizer.
+# mulWMJ()
+# Compute the sparse matrix product WMJ, where
+#   W is a diagonal matrix (represented by a vector)
+#   M is a resolution matrix (the .data field of a
+#     ResMatrix, since Numba can't handle classes)
+#   J is a column-sparse matrix computed by the ideal
+#     Jacobian calculation.
 #
-def _jacobian(free_parameters,
-              obs_bin_edges,
-              log_obs_bin_edges,
-              obs_fluxes, # not used
-              obs_weights,
-              redshift,
-              line_wavelengths,
-              resolution_matrices,
-              camerapix,
-              params_mapping):
+# Return the result as a column-sparse matrix in the
+# same form as J.
+#
+# NB: for future, we should allocate enough extra space
+# in J to let us create P in place, overwriting J
+#
+@jit(nopython=True, fastmath=True, nogil=True)
+def mulWMJ(w, M, jac):
 
-    #
-    # expand free paramters into complete
-    # parameter array, handling tied params
-    # and doublets
-    #
+    starts, ends, J = jac
     
-    parameters = params_mapping.mapFreeToFull(free_parameters)
-    lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
+    nbins, ndiag = M.shape
+    ncol, maxColSize = J.shape
     
-    J_S = params_mapping.getJacobian(free_parameters)
+    hdiag = ndiag//2
+    
+    P = np.empty((ncol, maxColSize + ndiag - 1), dtype=J.dtype)
+    startsP = np.zeros(ncol, dtype=np.int32)
+    endsP   = np.zeros(ncol, dtype=np.int32)
+    
+    for j in range(ncol):
+        # boundaries of nonzero entries
+        # in jth column of J
+        s = starts[j]
+        e = ends[j]
+        
+        if s == e: # no nonzero values in column j
+            continue
+        
+        # boundaries of entries in jth column of P
+        # impacted by matrix multiply
+        imin = np.maximum(s - hdiag, 0)
+        imax = np.minimum(e + hdiag, nbins) # one past last impacted entry
+        
+        for i in range(imin, imax):
+            
+            # boundaries of interval of k where both
+            # M[i, k] and J[k, j] are nonzero.
+            kmin = np.maximum(i - hdiag,     s)
+            kmax = np.minimum(i + hdiag, e - 1)
+        
+            acc = 0.
+            for k in range(kmin, kmax + 1):
+                acc += M[i, k - i + hdiag] * J[j, k - s]
+            P[j, i - imin] = acc * w[i]
+        
+        startsP[j] = np.maximum(imin, 0)
+        endsP[j]   = np.minimum(imax, nbins)
+                
+    return (startsP, endsP, P)
 
-    jacs = []
-    for icam, campix in enumerate(camerapix):
-        s = campix[0]
-        e = campix[1]
-        
-        idealJac = \
-            build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
-                                        obs_bin_edges[s+icam:e+icam+1],
-                                        log_obs_bin_edges[s+icam:e+icam+1],
-                                        redshift,
-                                        line_wavelengths)
-        
-        jacs.append( mulWMJ(obs_weights[s:e],
-                            resolution_matrices[icam],
-                            idealJac) )
-        
-    
-    nBins = np.sum(camerapix[:,1] - camerapix[:,0])
-    nFreeParms = len(free_parameters)
-    return EMLineJacobian((nBins, nFreeParms), camerapix, jacs, J_S)
 
 ###############################################################################
 
 #
-# centers_to_edges()
+# bin_centers_to_edges()
 # Convert N bin centers to N+1 bin edges.  Edges are placed
 # halfway between centers, with extrapolation at the ends.
 #
 @jit(nopython=True, fastmath=False, nogil=True)
-def centers_to_edges(centers, camerapix):
+def bin_centers_to_edges(centers, camerapix):
 
     ncameras = camerapix.shape[0]
     edges = np.empty(len(centers) + ncameras, dtype=centers.dtype)
@@ -440,8 +500,8 @@ def centers_to_edges(centers, camerapix):
         edge_l = icenters[ 0] - (icenters[ 1] - int_edges[ 0])
         edge_r = icenters[-1] + (icenters[-1] - int_edges[-1])
 
-        edges[s+icam:e+icam+1] = np.hstack((np.array((edge_l,)),
-                                            int_edges,
-                                            np.array((edge_r,))))
+        edges[s + icam]              = edge_l
+        edges[s + icam + 1:e + icam] = int_edges
+        edges[e + icam]              = edge_r
 
     return edges

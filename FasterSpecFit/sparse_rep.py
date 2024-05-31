@@ -1,164 +1,163 @@
+#
+# Sparse representations of resolution matrices and
+# Jacobian of objective for emission line fitting
+# (Ideal Jacobian rep is generated in EMLines_jacobian())
+#
+
 import numpy as np
 import scipy.sparse as sp
 
 from numba import jit
 
+from .params_mapping import ParamsMapping
+
 #
-# dia_to_row_matrix()
-# Convert a diagonally sparse matrix M in the form
-# stored by DESI into a sparse row rerpesentation.
-#
-# Input M is represented as a 2D array D of size ndiag x nrow,
-# whose rows are M's diagonals:
-#            M[i,j] = D[ndiag//2 - (j - i), j]
-# ndiag is assumed to be odd, and entries in D that would be
-# outside the bounds of M are ignored.
-#
-# Output M is a 2D array A of size nrow x ndiag,,whose rows are
-# M's rows, but with only the nonzero entries stored.  The nonzero
-# entries on row i run for j = i - diag//2 to i + diag//2, so
+# resolution matrix
+# A resolution matrix M of size nrow x nrow is stored as a 2D array A of
+# size nrow x ndiag, where ndiag is the number of nonzero diagonals
+# (which must be odd).  The rows of A are M's rows, but with only the
+# nonzero entries stored.  The nonzero entries on row i run from
+# j = i - diag//2 to i + diag//2, so
 #            M[i,j] = A[i, j - (i - diag//2)]
 #
-@jit(nopython=True, fastmath=True, nogil=True)
-def dia_to_row_matrix(D):
+class ResMatrix(object):
 
-    ndiag, nrow = D.shape
-    hdiag = ndiag//2
+    def __init__(self, D):
+        self.data = self._from_dia_matrix(D)
 
-    A = np.empty((nrow, ndiag), dtype=D.dtype)
+    def matvec(self, v, w):
+        self._matvec(self.data, v, w)
+        
+    #
+    # _from_dia_matrix()
+    # Convert a diagonally sparse matrix M in the form
+    # stored by DESI into a sparse row rerpesentation.
+    #
+    # Input M is represented as a 2D array D of size ndiag x nrow,
+    # whose rows are M's diagonals:
+    #            M[i,j] = D[ndiag//2 - (j - i), j]
+    # ndiag is assumed to be odd, and entries in D that would be
+    # outside the bounds of M are ignored.
+    #
+    @staticmethod
+    @jit(nopython=True, fastmath=True, nogil=True)
+    def _from_dia_matrix(D):
+
+        ndiag, nrow = D.shape
+        hdiag = ndiag//2
+
+        A = np.empty((nrow, ndiag), dtype=D.dtype)
     
-    for i in range(nrow):
-        # min and max column for row
-        jmin = np.maximum(i - hdiag,        0)
-        jmax = np.minimum(i + hdiag, nrow - 1)
-        for j in range(jmin, jmax + 1):
-            A[i, j - i + hdiag] = D[hdiag + i - j, j]
-        
-    return A
+        for i in range(nrow):
+            # min and max column for row
+            jmin = np.maximum(i - hdiag,        0)
+            jmax = np.minimum(i + hdiag, nrow - 1)
 
-
-#
-# resMul()
-# Compute the matrix-vector product Mv, where
-# M is a row-sparse matrix with a limited
-# number of diagonals created by
-# dia_to_row_matrix().
-#
-# w is an output parameter
-@jit(nopython=True, fastmath=True, nogil=True)
-def resMul(M, v, w):
-
-    nrow, ndiag = M.shape
-    hdiag = ndiag//2
-
-    for i in range(nrow):
-        jmin = np.maximum(i - hdiag,    0)
-        jmax = np.minimum(i + hdiag, nrow - 1)
-
-        acc = 0.
-        for j in range(jmin, jmax + 1):
-            acc += M[i, j - i + hdiag] * v[j]
-        
-        w[i] = acc
-
-#
-# mulWMJ()
-# Compute the product WMJ, where
-#   W is a diagonal matrix (represented by a vector)
-#   M is a row-sparse matrix computed by dia_to_row()
-#   J is a column-sparse matrix computed by the ideal
-#     Jacobian calculation.
-#
-# Return the result as a column-sparse matrix in the
-# same form as J.
-#
-# NB: for future, we shoudl allocate enough extra space
-# in J to let us create P in place, overwriting J
-#
-@jit(nopython=True, fastmath=True, nogil=True)
-def mulWMJ(w, M, jac):
-
-    starts, ends, J = jac
-    
-    nbins, ndiag = M.shape
-    ncol, maxColSize = J.shape
-    
-    hdiag = ndiag//2
-    
-    P = np.empty((ncol, maxColSize + ndiag - 1), dtype=J.dtype)
-    startsP = np.zeros(ncol, dtype=np.int32)
-    endsP   = np.zeros(ncol, dtype=np.int32)
-    
-    for j in range(ncol):
-        # boundaries of nonzero entries
-        # in jth column of J
-        s = starts[j]
-        e = ends[j]
-        
-        if s == e: # no nonzero values in column j
-            continue
-        
-        # boundaries of entries in jth column of P
-        # impacted by matrix multiply
-        imin = np.maximum(s - hdiag, 0)
-        imax = np.minimum(e + hdiag, nbins) # one past last impacted entry
-        
-        for i in range(imin, imax):
-            
-            # boundaries of interval of k where both
-            # M[i, k] and J[k, j] are nonzero.
-            kmin = np.maximum(i - hdiag,     s)
-            kmax = np.minimum(i + hdiag, e - 1)
-        
-            acc = 0.
-            for k in range(kmin, kmax + 1):
-                acc += M[i, k - i + hdiag] * J[j, k - s]
-            P[j, i - imin] = acc * w[i]
-        
-        startsP[j] = np.maximum(imin, 0)
-        endsP[j]   = np.minimum(imax, nbins)
+            for j in range(jmin, jmax + 1):
+                A[i, j - i + hdiag] = D[hdiag + i - j, j]
                 
-    return (startsP, endsP, P)
-
-
-
-class EMLineJacobian(sp.linalg.LinearOperator):
-
-    # we will pass camerapix, jacs, and J_S.  Jacs will be outputs of mulWMJ.
-    # Move JIT'd multiplies from IdealJacobian into here to avoid another
-    # layer of indirection.
+        return A
     
+    #
+    # _matvec()
+    # Compute the matrix-vector product M * v, where
+    # M is a row-sparse matrix with a limited
+    # number of diagonals created by
+    # dia_to_row_matrix().
+    #
+    # w is an output parameter
+    #
+    @staticmethod
+    @jit(nopython=True, fastmath=True, nogil=True)
+    def _matvec(M, v, w):
+
+        nrow, ndiag = M.shape
+        hdiag = ndiag//2
+        
+        for i in range(nrow):
+            jmin = np.maximum(i - hdiag,    0)
+            jmax = np.minimum(i + hdiag, nrow - 1)
+            
+            acc = 0.
+            for j in range(jmin, jmax + 1):
+                acc += M[i, j - i + hdiag] * v[j]
+        
+            w[i] = acc
+
+
+#################################################################
+
+#
+# Sparse Jacobian of objective function.  For
+# each camera's pixel range, the Jacobian
+# is a matrix product
+#
+#    W * M * J_I * J_S
+#
+# where
+#  J_S is the Jacobian of the parameter expansion
+#  J_I is the ideal Jacobian
+#  M is the camera's resolution matrix
+#  w is a diagonal matrix of per-observation weights
+#
+# Note that we precompute W*M*J_I for each camera 
+# with the external mulWMJ() function.  This product
+# has one contiguous run of nonzero entries per column,
+# while J_S has either one or two nonzero entries
+# per row.
+#
+class EMLineJacobian(sp.linalg.LinearOperator):
+    
+    #
+    # CONSTRUCTOR ARGS:
+    #   shape of Jacobian
+    #   array of start and end obs bin indices
+    #     for each camera
+    #   partial Jacobian jac = (W * M  J_I)
+    #     for each camera
+    #   parameter expansion Jacobian J_S
+    #
     def __init__(self, shape, camerapix, jacs, J_S):
         
         self.camerapix = camerapix
         self.jacs      = jacs
         self.J_S       = J_S
 
+        # get initialization info from one of jacs
+        J0 = jacs[0][2]
+
         # temporary storage for intermediate result
-        nParms = jacs[0][2].shape[0]
-        self.vFull = np.empty(nParms, dtype=J_S[2].dtype)
-                
-        super().__init__(J_S[2].dtype, shape)
+        nParms = J0.shape[0]
+        self.vFull = np.empty(nParms, dtype=J0.dtype)
+        
+        super().__init__(J0.dtype, shape)
 
 
+    #
+    # Compute left matrix-vector product J * v
     # |v| = number of free parameters
+    #
     def _matvec(self, v):
 
         nBins = self.shape[0]
-        w = np.zeros(nBins, dtype=v.dtype)
-
-        self._matvec_JS(self.J_S, v.ravel(), self.vFull)
+        w = np.empty(nBins, dtype=v.dtype)
+        
+        # return result in self.vFull
+        ParamsMapping._matvec(self.J_S, v.ravel(), self.vFull)
         
         for campix, jac in zip(self.camerapix, self.jacs):
             s = campix[0]
             e = campix[1]
-            
+
+            # write result to w[s:e]
             self._matvec_J(jac, self.vFull, w[s:e])
             
         return w
-        
-    
+
+    #
+    # Compute right matrix product product v * J^T
     # |v| = number of observable bins
+    #
     def _rmatvec(self, v):
 
         nFreeParms = self.shape[1]
@@ -167,52 +166,37 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         for campix, jac in zip(self.camerapix, self.jacs):
             s = campix[0]
             e = campix[1]
-            
+
+            # return result in self.vFull
             self._rmatvec_J(jac, v[s:e], self.vFull)
 
-            self._rmatvec_JS(self.J_S, self.vFull, w)
-            
+            # add result to w
+            ParamsMapping._rmatvec(self.J_S, self.vFull, w)
+        
         return w
 
-    @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
-    def _matvec_JS(J_S, v, w):
-    
-        shape, ops, factors = J_S
-        
-        for j in range(len(w)):
-            w[j] = 0.
-        
-        for i in range(len(ops)):
-            w[ops[i, 0]] += factors[i] * v[ops[i, 1]]
-        return w
-
-
-    # avoid allocations by passing in destination vec w
-    @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
-    def _rmatvec_JS(J_S, v, w):
-
-        shape, ops, factors = J_S
-    
-        for i in range(len(ops)):
-            w[ops[i, 1]] += factors[i] * v[ops[i, 0]]
-
-
-    # avoid allocations by passing in destination vec w
+    #
+    # Multiply ideal Jacobian J * v, writing result to w.
+    #
     @staticmethod
     @jit(nopython=True, fastmath=True, nogil=True)
     def _matvec_J(J, v, w):
     
         starts, ends, values = J
         nvars = len(starts)
+        nbins = len(w)
+        
+        for j in range(nbins):
+            w[j] = 0.
         
         for i in range(nvars):
             vals = values[i]    # column i
             for j in range(ends[i] - starts[i]):
                 w[j + starts[i]] += vals[j] * v[i]  
     
-
+    #
+    # Multiply ideal Jacobian v * J^T, writing result to w.
+    #
     @staticmethod
     @jit(nopython=True, fastmath=True, nogil=True)
     def _rmatvec_J(J, v, w):
@@ -227,5 +211,3 @@ class EMLineJacobian(sp.linalg.LinearOperator):
             for j in range(ends[i] - starts[i]):
                 acc += vals[j] * v[j + starts[i]]
             w[i] = acc
-            
-        return w
