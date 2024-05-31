@@ -11,6 +11,7 @@ from scipy.optimize import least_squares
 from numba import jit
 
 from .sparse_rep import resMul
+from .params_mapping import ParamsMapping
 
 # Do not bother computing normal PDF/CDF if more than this many 
 # standard deviations from mean.
@@ -89,7 +90,11 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
 
-    ibin_width = np.hstack((np.array([0.]), 1/np.diff(obs_bin_edges)))
+    # dummies before and after widths are needed
+    # for corner cases in edge -> bin computation
+    ibin_width = np.hstack((np.array([0.]),
+                            1/np.diff(obs_bin_edges),
+                            np.array([0.])))
     
     nbins = len(obs_bin_edges) - 1
     
@@ -103,7 +108,7 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
     # enough for whatever we may need to compute ([lo - 1 .. hi])
     max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
-    edge_vals = np.empty(max_width)  
+    edge_vals = np.empty(max_width)
 
     # compute total area of all Gaussians inside each bin.
     # For each Gaussian, we only compute area contributions
@@ -156,7 +161,7 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
         # we get values for bins lo-1 to hi-1 inclusive
         for i in range(nedges-1):
             edge_vals[i] = (edge_vals[i+1] - edge_vals[i]) * ibin_width[i+lo]
-        
+            
         # add bin avgs for this peak to the full array
         model_fluxes[lo:hi+1] += edge_vals[:nedges-1] 
         
@@ -180,13 +185,7 @@ def _objective(free_parameters,
                line_wavelengths,
                resolution_matrices,
                camerapix,
-               parameters,
-               Ifree,
-               Itied,
-               tiedtoparam,
-               tiedfactor,
-               doubletindx,
-               doubletpair):
+               params_mapping):
 
     #
     # expand free paramters into complete
@@ -194,15 +193,8 @@ def _objective(free_parameters,
     # and doublets
     #
     
-    parameters[Ifree] = free_parameters
-    if len(Itied) > 0:
-        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
-            parameters[I] = parameters[indx] * factor
-    
+    parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
-    
-    # doublets
-    lineamps[doubletindx] *= lineamps[doubletpair]
     
     model_fluxes = np.empty_like(obs_fluxes)
     for icam, campix in enumerate(camerapix):
@@ -216,18 +208,18 @@ def _objective(free_parameters,
                                 log_obs_bin_edges[s+icam:e+icam+1],
                                 redshift,
                                 line_wavelengths)
+
+        # convolve model with resolution matrix and store in
+        # this camera's subrange of model_fluxes
+        resMul(resolution_matrices[icam], mf, model_fluxes[s:e])
         
-        #model_fluxes[s:e] = np.maximum(0., resolution_matrices[icam].dot(mf))
-        model_fluxes[s:e] = resMul(resolution_matrices[icam], mf)
-        
-    residuals = obs_weights * (model_fluxes - obs_fluxes) # model minus data
+    return obs_weights * (model_fluxes - obs_fluxes) # residuals
     
-    return residuals
 
 
 ###############################################################################
 
-from .sparse_rep import mulWMJ, EMLineJacobian, ParamsMapping
+from .sparse_rep import mulWMJ, EMLineJacobian
 
 # replacement for np.tile, which is not supported by Numba
 @jit(nopython=True, fastmath=True, nogil=True)
@@ -243,18 +235,15 @@ def mytile(a, n):
 # build_emline_model_jacobian() 
 #
 # Compute the Jacobian of the function computed in build_emlines_model().
-# Inputs are as for build_emlines_model(), except for
-#
-#  obs_weights -- weights for observations in each bin
-#
-# (passed here so that we can apply them sparsely).
+# Inputs are as for build_emlines_model().
 #
 # RETURNS:
-# Jacobian as a *dense* matrix (Numba does not support scipy.sparse)
+# Sparse Jacobian as tuple (starts, ends, dd), where
+#  column j has nonzero values between starts[j] and ends[j],
+#  which are stored in dd[j].
 #
 @jit(nopython=True, fastmath=True, nogil=True)
 def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
-                                obs_weights,
                                 obs_bin_edges,
                                 log_obs_bin_edges,
                                 redshift,
@@ -263,15 +252,19 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
 
-    w = np.hstack((np.array([0.]), 1. / np.diff(obs_bin_edges)))
+    # dummies before and after widths are needed
+    # for corner cases in edge -> bin computation
+    ibin_width = np.hstack((np.array([0.]),
+                            1. / np.diff(obs_bin_edges),
+                            np.array([0.])))
     
     max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
     
     nlines = len(line_wavelengths)
     dd     = np.empty((3 * nlines, max_width))
-    starts = np.zeros(nlines, dtype=np.int32)
-    ends   = np.zeros(nlines, dtype=np.int32)
+    starts = np.zeros((nlines), dtype=np.int32)
+    ends   = np.zeros((nlines), dtype=np.int32)
     
     # compute partial derivatives for avg values of all Gaussians
     # inside each bin. For each Gaussian, we only compute
@@ -296,10 +289,10 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
         hi = np.searchsorted(log_obs_bin_edges,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
-        
+                    
         if hi == lo:  # Gaussian is entirely outside bounds of obs_bin_edges
             continue
-        
+
         nedges = hi - lo + 2 # compute values at edges [lo - 1 ... hi]
         
         # Compute contribs of each line to each partial derivative in place.
@@ -338,32 +331,36 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
         ddv_vals[nedges - 1] = A * sigma
         dds_vals[nedges - 1] = A * line_shift * (1 + sigma**2)
         
-        # convert *_vals[i] to partial derivatives for bin i+lo-1 (last value
-        # in each array is garbage)
+        # convert *_vals[i] to partial derivatives for bin i+lo-1
+        # (last value in each array is garbage)
         # we get values for bins lo-1 to hi-1 inclusive
         for i in range(nedges - 1):
-            dda_vals[i] = (dda_vals[i+1] - dda_vals[i]) * w[i+lo]
-            ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * w[i+lo]
-            dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * w[i+lo]
-
-        # don't need to fix the garbage, as sparse rep does not use it
-        #dda_vals[nedges - 1] = 0. # actual derivative for this bin
-        #ddv_vals[nedges - 1] = 0. # actual derivative for this bin
-        #dds_vals[nedges - 1] = 0. # actual derivative for this bin
+            dda_vals[i] = (dda_vals[i+1] - dda_vals[i]) * ibin_width[i+lo]
+            ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * ibin_width[i+lo]
+            dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * ibin_width[i+lo]
         
+        # starts[j] is set to first valid bin
         if lo == 0:
+            # bin low - 1 is before start of requested bins,
+            # and its true left endpt value is unknown
             starts[j] = lo
-            
+
+            # discard bin lo - 1 in dd*_vals
             dda_vals[0:nedges - 1] = dda_vals[1:nedges]
             ddv_vals[0:nedges - 1] = ddv_vals[1:nedges]
             dds_vals[0:nedges - 1] = dds_vals[1:nedges]
-            # 0 entry of dd*_vals is dummy
         else:
+            # bin lo - 1 is valid
             starts[j] = lo - 1
-            # 0 entry is valid
         
-        # one past last valid entry
-        ends[j] = hi
+        # ends[j] is set one past last valid bin
+        if hi >= len(obs_bin_edges):
+            # bin hi - 1 is one past end of requested bins,
+            # and its true right endpt value is unknown
+            ends[j] = hi - 1
+        else:
+            # bin hi - 1 is valid
+            ends[j] = hi
 
     return (mytile(starts, 3), mytile(ends, 3), dd)
     
@@ -377,60 +374,45 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
 def _jacobian(free_parameters,
               obs_bin_edges,
               log_obs_bin_edges,
-              obs_fluxes,
+              obs_fluxes, # not used
               obs_weights,
               redshift,
               line_wavelengths,
               resolution_matrices,
               camerapix,
-              parameters,
-              Ifree,
-              Itied,
-              tiedtoparam,
-              tiedfactor,
-              doubletindx,
-              doubletpair):
+              params_mapping):
 
     #
     # expand free paramters into complete
     # parameter array, handling tied params
     # and doublets
     #
-
-    parameters[Ifree] = free_parameters
-    if len(Itied) > 0:
-        for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
-            parameters[I] = parameters[indx] * factor
     
+    parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
-    # doublets
-    lineamps[doubletindx] *= lineamps[doubletpair]
-    
-    # construct the jacobian of mapping from free to full params
-    mapping = ParamsMapping(len(parameters),
-                            Ifree, Itied, tiedtoparam, tiedfactor,
-                            doubletindx, doubletpair)
-    J_S = mapping.getJacobian(free_parameters)
+    J_S = params_mapping.getJacobian(free_parameters)
 
     jacs = []
-
     for icam, campix in enumerate(camerapix):
         s = campix[0]
         e = campix[1]
         
         idealJac = \
             build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
-                                        obs_weights[s:e],
                                         obs_bin_edges[s+icam:e+icam+1],
                                         log_obs_bin_edges[s+icam:e+icam+1],
                                         redshift,
                                         line_wavelengths)
         
-        jac = mulWMJ(obs_weights[s:e], resolution_matrices[icam], idealJac)
-        jacs.append(jac)
+        jacs.append( mulWMJ(obs_weights[s:e],
+                            resolution_matrices[icam],
+                            idealJac) )
         
-    return EMLineJacobian(camerapix, jacs, J_S)
+    
+    nBins = np.sum(camerapix[:,1] - camerapix[:,0])
+    nFreeParms = len(free_parameters)
+    return EMLineJacobian((nBins, nFreeParms), camerapix, jacs, J_S)
 
 ###############################################################################
 
