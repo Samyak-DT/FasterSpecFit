@@ -22,7 +22,7 @@ class ParamsMapping(object):
         # to its location in free list
         p = np.empty(self.nParms, dtype=np.int32)
         p[freeParms] = np.arange(self.nFreeParms, dtype=np.int32)
-
+        
         self._precomputeMapping(fixedParameters, freeParms,
                                 tiedParms, tiedSources, tiedFactors,
                                 doubletRatios, doubletSources,
@@ -217,6 +217,3 @@ class ParamsMapping(object):
             self.jacFactors[i] = factor
         
         self.jacDoubletPatches = np.array(jacDoubletPatches)
-
-
-

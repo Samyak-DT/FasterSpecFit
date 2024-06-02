@@ -488,7 +488,7 @@ def fit_emlines(datadir='.', fast=False):
         
         model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
         chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-        log.info(f'{iobj}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_elapsed:.4f} seconds '
+        log.info(f'{iobj}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_elapsed:.3f} seconds '
                  f'[niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
                 
         # write out...

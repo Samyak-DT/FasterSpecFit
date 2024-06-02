@@ -111,26 +111,24 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     #
     # CONSTRUCTOR ARGS:
     #   shape of Jacobian
+    #   number of parameters in full set
     #   array of start and end obs bin indices
     #     for each camera
     #   partial Jacobian jac = (W * M  J_I)
     #     for each camera
     #   parameter expansion Jacobian J_S
     #
-    def __init__(self, shape, camerapix, jacs, J_S):
+    def __init__(self, shape, nParms, camerapix, jacs, J_S):
         
         self.camerapix = camerapix
         self.jacs      = jacs
         self.J_S       = J_S
-
-        # get initialization info from one of jacs
-        J0 = jacs[0][2]
-
-        # temporary storage for intermediate result
-        nParms = J0.shape[0]
-        self.vFull = np.empty(nParms, dtype=J0.dtype)
         
-        super().__init__(J0.dtype, shape)
+        dtype = jacs[0][1].dtype
+        
+        self.vFull = np.empty(nParms, dtype=dtype)
+        
+        super().__init__(dtype, shape)
 
 
     #
@@ -138,7 +136,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     # |v| = number of free parameters
     #
     def _matvec(self, v):
-
+        
         nBins = self.shape[0]
         w = np.empty(nBins, dtype=v.dtype)
         
@@ -146,9 +144,8 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         ParamsMapping._matvec(self.J_S, v.ravel(), self.vFull)
         
         for campix, jac in zip(self.camerapix, self.jacs):
-            s = campix[0]
-            e = campix[1]
-
+            s, e = campix
+            
             # write result to w[s:e]
             self._matvec_J(jac, self.vFull, w[s:e])
             
@@ -164,9 +161,8 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         w = np.zeros(nFreeParms, dtype=v.dtype)
         
         for campix, jac in zip(self.camerapix, self.jacs):
-            s = campix[0]
-            e = campix[1]
-
+            s, e = campix
+            
             # return result in self.vFull
             self._rmatvec_J(jac, v[s:e], self.vFull)
 
@@ -174,7 +170,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
             ParamsMapping._rmatvec(self.J_S, self.vFull, w)
         
         return w
-
+    
     #
     # Multiply ideal Jacobian J * v, writing result to w.
     #
@@ -182,17 +178,19 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     @jit(nopython=True, fastmath=True, nogil=True)
     def _matvec_J(J, v, w):
     
-        starts, ends, values = J
-        nvars = len(starts)
+        endpts, values = J
+        nvars = endpts.shape[0]
         nbins = len(w)
         
         for j in range(nbins):
             w[j] = 0.
         
         for i in range(nvars):
+            s, e = endpts[i]
             vals = values[i]    # column i
-            for j in range(ends[i] - starts[i]):
-                w[j + starts[i]] += vals[j] * v[i]  
+
+            for j in range(e - s):
+                w[j + s] += vals[j] * v[i]  
     
     #
     # Multiply ideal Jacobian v * J^T, writing result to w.
@@ -201,13 +199,14 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     @jit(nopython=True, fastmath=True, nogil=True)
     def _rmatvec_J(J, v, w):
     
-        starts, ends, values = J
-        nvars = len(starts)
+        endpts, values = J
+        nvars = endpts.shape[0]
     
         for i in range(nvars):
+            s, e = endpts[i]
             vals = values[i]   # row i of transpose
             
             acc = 0.
-            for j in range(ends[i] - starts[i]):
-                acc += vals[j] * v[j + starts[i]]
+            for j in range(e - s):
+                acc += vals[j] * v[j + s]
             w[i] = acc

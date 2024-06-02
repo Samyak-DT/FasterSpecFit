@@ -90,8 +90,7 @@ def EMLine_objective(free_parameters,
     for icam, campix in enumerate(camerapix):
 
         # start and end for obs fluxes of camera icam
-        s = campix[0]
-        e = campix[1]
+        s, e = campix
         
         mf = build_emline_model(lineamps, linevshifts, linesigmas,
                                 obs_bin_edges[s+icam:e+icam+1],
@@ -246,11 +245,10 @@ def EMLine_jacobian(free_parameters,
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
     J_S = params_mapping.getJacobian(free_parameters)
-
+    
     jacs = []
     for icam, campix in enumerate(camerapix):
-        s = campix[0]
-        e = campix[1]
+        s, e = campix
         
         idealJac = \
             build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
@@ -263,10 +261,11 @@ def EMLine_jacobian(free_parameters,
                             resolution_matrices[icam].data,
                             idealJac) )
         
-    
-    nBins = np.sum(camerapix[:,1] - camerapix[:,0])
+    nBins = np.sum(np.diff(camerapix))
     nFreeParms = len(free_parameters)
-    return EMLineJacobian((nBins, nFreeParms), camerapix, jacs, J_S)
+    nParms = len(parameters)
+    return EMLineJacobian((nBins, nFreeParms), nParms,
+                          camerapix, jacs, J_S)
 
 
 #
@@ -276,8 +275,8 @@ def EMLine_jacobian(free_parameters,
 # Inputs are as for build_emlines_model().
 #
 # RETURNS:
-# Sparse Jacobian as tuple (starts, ends, dd), where
-#  column j has nonzero values between starts[j] and ends[j],
+# Sparse Jacobian as tuple (endpts, dd), where
+#  column j has nonzero values in interval [ endpts[j,0] , endpts[j,1] )
 #  which are stored in dd[j].
 #
 @jit(nopython=True, fastmath=True, nogil=True)
@@ -301,8 +300,10 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
     
     nlines = len(line_wavelengths)
     dd     = np.empty((3 * nlines, max_width))
-    starts = np.zeros((nlines), dtype=np.int32)
-    ends   = np.zeros((nlines), dtype=np.int32)
+    endpts = np.zeros((nlines, 2), dtype=np.int32)
+
+    starts = endpts[:,0]
+    ends   = endpts[:,1]
     
     # compute partial derivatives for avg values of all Gaussians
     # inside each bin. For each Gaussian, we only compute
@@ -400,16 +401,16 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
             # bin hi - 1 is valid
             ends[j] = hi
 
-    return (mytile(starts, 3), mytile(ends, 3), dd)    
+    return (mytile(endpts, 3), dd)    
 
 
 # replacement for np.tile, which is not supported by Numba
 @jit(nopython=True, fastmath=True, nogil=True)
 def mytile(a, n):
-    sz = len(a)
-    r = np.empty(n * sz, dtype=a.dtype)
+    sz = a.shape[0]
+    r = np.empty((n * sz, a.shape[1]), dtype=a.dtype)
     for i in range(n):
-        r[i*sz:(i+1)*sz] = a
+        r[i*sz:(i+1)*sz,:] = a
     return r
 
 
@@ -431,7 +432,7 @@ def mytile(a, n):
 @jit(nopython=True, fastmath=True, nogil=True)
 def mulWMJ(w, M, jac):
 
-    starts, ends, J = jac
+    endpts, J = jac
     
     nbins, ndiag = M.shape
     ncol, maxColSize = J.shape
@@ -439,14 +440,12 @@ def mulWMJ(w, M, jac):
     hdiag = ndiag//2
     
     P = np.empty((ncol, maxColSize + ndiag - 1), dtype=J.dtype)
-    startsP = np.zeros(ncol, dtype=np.int32)
-    endsP   = np.zeros(ncol, dtype=np.int32)
+    endptsP = np.zeros((ncol,2), dtype=np.int32)
     
     for j in range(ncol):
         # boundaries of nonzero entries
         # in jth column of J
-        s = starts[j]
-        e = ends[j]
+        s, e = endpts[j]
         
         if s == e: # no nonzero values in column j
             continue
@@ -467,11 +466,11 @@ def mulWMJ(w, M, jac):
             for k in range(kmin, kmax + 1):
                 acc += M[i, k - i + hdiag] * J[j, k - s]
             P[j, i - imin] = acc * w[i]
+
+        endptsP[j] = np.array([np.maximum(imin, 0),
+                               np.minimum(imax, nbins)])
         
-        startsP[j] = np.maximum(imin, 0)
-        endsP[j]   = np.minimum(imax, nbins)
-                
-    return (startsP, endsP, P)
+    return (endptsP, P)
 
 
 ###############################################################################
@@ -489,8 +488,7 @@ def bin_centers_to_edges(centers, camerapix):
     
     for icam, campix in enumerate(camerapix):
 
-        s = campix[0]
-        e = campix[1]
+        s, e = campix
         icenters = centers[s:e]
         
         #- interior edges are just points half way between bin centers
