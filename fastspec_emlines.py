@@ -22,8 +22,8 @@ time python code/desihub/FasterSpecFit/FasterSpecFit/fastspec_emlines.py --fast
 import os, time, pdb
 import numpy as np
 
-from desiutil.log import get_logger
-log = get_logger()
+from desiutil.log import get_logger, DEBUG
+log = get_logger(DEBUG)
 
 from FasterSpecFit import ResMatrix
 
@@ -318,8 +318,8 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
             T = linemodel['tiedtoparam'] == lineindx
             if np.any(T):
                 for tiedline in set(linemodel['linename'][T]):
-                    drop2[linemodel['param_name'] == '{}_amp'.format(tiedline)] = True
-            drop2[linemodel['param_name'] == '{}_amp'.format(dropline)] = True
+                    drop2[linemodel['param_name'] == f'{tiedline}_amp'] = True
+            drop2[linemodel['param_name'] == f'{dropline}_amp'] = True
 
     # drop amplitudes for any lines tied to a line with a dropped vshift
     vshiftdropped = np.where(emfit.vshift_param_bool * drop2)[0]
@@ -340,24 +340,22 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                                  parameters[Ifree] > linemodel['bounds'][Ifree, 1])
     drop3 *= notfixed
         
-    log.debug('Dropping {} negative-amplitude lines.'.format(np.sum(drop1))) # linewidth can't be negative
-    log.debug('Dropping {} sigma,vshift parameters of zero-amplitude lines.'.format(np.sum(drop2)))
-    log.debug('Dropping {} parameters which are out-of-bounds.'.format(np.sum(drop3)))
+    log.debug(f'Dropping {np.sum(drop1)} negative-amplitude lines.') # linewidth can't be negative
+    log.debug(f'Dropping {np.sum(drop2)} sigma,vshift parameters of zero-amplitude lines.')
+    log.debug(f'Dropping {np.sum(drop3)} parameters which are out-of-bounds.')
     Idrop = np.where(np.logical_or.reduce((drop1, drop2, drop3)))[0]
     
     if len(Idrop) > 0:
-        log.debug('  Dropping {} unique parameters.'.format(len(Idrop)))
+        log.debug(f'  Dropping {len(Idrop)} unique parameters.')
         parameters[Idrop] = 0.0
     
-    # apply tied constraints
+    # apply tied and doublet constraints
     if len(Itied) > 0:
         for I, indx, factor in zip(Itied, tiedtoparam, tiedfactor):
             parameters[I] = parameters[indx] * factor
 
-    # lineamps[doubletindx] *= lineamps[doubletpair]
-    # FIXME: original code does not apply doublets again after
-    # dropping params. It should be doing it if the source member
-    # of a doublet was dropped.
+    # hack! assumes amplitudes are always first in the parameter split
+    parameters[doubletindx] *= parameters[doubletpair]
 
     # Now loop back through and drop Broad balmer lines that:
     #   (1) are narrower than their narrow-line counterparts;
