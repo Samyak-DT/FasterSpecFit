@@ -1,8 +1,0 @@
-Runtime: cpu
-Time of Execution: Mon May 20 09:40:28 2024
-Time: 1.747s
-Time: 1.214s
-Time: 1.627s
-Time: 0.962s
-Time: 1.663s
-Average time = 1.443

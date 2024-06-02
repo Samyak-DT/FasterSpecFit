@@ -1,8 +1,0 @@
-Runtime: sparse_multi
-Time of Execution: Mon May 20 16:38:15 2024
-Time: 2.363s
-Time: 2.213s
-Time: 1.375s
-Time: 1.183s
-Time: 1.027s
-Average time = 1.632

@@ -1,8 +1,0 @@
-Runtime: cpu_direct
-Time of Execution: Mon May 20 09:47:11 2024
-Time: 0.659s
-Time: 0.381s
-Time: 0.500s
-Time: 0.329s
-Time: 0.514s
-Average time = 0.477
