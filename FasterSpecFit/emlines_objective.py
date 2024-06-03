@@ -67,8 +67,7 @@ def norm_cdf(a):
 # vector of residuals between the modeled fluxes and the observations.
 #
 def EMLine_objective(free_parameters,
-                     obs_bin_edges,
-                     log_obs_bin_edges,
+                     bin_data,
                      obs_fluxes,
                      obs_weights,
                      redshift,
@@ -84,6 +83,8 @@ def EMLine_objective(free_parameters,
     #
     parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
+
+    log_obs_bin_edges, ibin_widths = bin_data
     
     model_fluxes = np.empty_like(obs_fluxes, dtype=obs_fluxes.dtype)
     
@@ -91,10 +92,15 @@ def EMLine_objective(free_parameters,
 
         # start and end for obs fluxes of camera icam
         s, e = campix
+
+        # Actual bin widths are in ibw[1..e-s].
+        # Setup guarantees that ibw[0] and
+        # ibw[e-s+1] are not out of bounds.
+        ibw = ibin_widths[s:e+1]
         
         mf = build_emline_model(lineamps, linevshifts, linesigmas,
-                                obs_bin_edges[s+icam:e+icam+1],
                                 log_obs_bin_edges[s+icam:e+icam+1],
+                                ibw,
                                 redshift,
                                 line_wavelengths)
         
@@ -119,8 +125,8 @@ def EMLine_objective(free_parameters,
 #   line_vshifts   -- additional velocity shift for each fitted lines
 #   line_sigmas    -- width of Gaussian profile for each fitted lines
 #
-#   obs_bin_edges     -- edges for observed spectral bins in ascending order
-#   log_obs_bin-edges -- natural log of values in obs_bin_edges
+#   log_obs_bin-edges -- natural log of observed wavelength bin edges
+#   ibin_widths       -- one over widths of each observed wavelength bin
 #   redshift          -- red shift of observed spectrum
 #   line_wavelengths  -- array of wavelengths for all fitted spectral lines
 #
@@ -129,27 +135,21 @@ def EMLine_objective(free_parameters,
 #
 @jit(nopython=True, fastmath=False, nogil=True)
 def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
-                       obs_bin_edges,
                        log_obs_bin_edges,
+                       ibin_widths,
                        redshift,
                        line_wavelengths):
     
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2 * np.pi)
-
-    # dummies before and after widths are needed
-    # for corner cases in edge -> bin computation
-    ibin_width = np.hstack((np.array([0.]),
-                            1/np.diff(obs_bin_edges),
-                            np.array([0.])))
     
-    nbins = len(obs_bin_edges) - 1
+    nbins = len(log_obs_bin_edges) - 1
     
     # output per-bin fluxes
     # entry i corresponds bin i-1
     # entry 0 is a dummy in case lo == 0
-    # last entry is a dummy in case hi == len(obs_bin_edges)
-    model_fluxes = np.zeros(nbins + 2, dtype=line_amplitudes.dtype)
+    # last entry is a dummy in case hi == nbins + 1
+    model_fluxes = np.zeros(nbins + 1, dtype=line_amplitudes.dtype)
 
     # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
@@ -182,7 +182,7 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
         
-        if hi == lo:  # entire Gaussian is outside bounds of obs_bin_edges
+        if hi == lo:  # entire Gaussian is outside bounds of log_obs_bin_edges
             continue
         
         nedges = hi - lo + 2  # compute values at edges [lo - 1 ... hi]
@@ -207,7 +207,7 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
         # convert vals[i] to avg of bin i+lo-1 (last value is garbage)
         # we get values for bins lo-1 to hi-1 inclusive
         for i in range(nedges-1):
-            edge_vals[i] = (edge_vals[i+1] - edge_vals[i]) * ibin_width[i+lo]
+            edge_vals[i] = (edge_vals[i+1] - edge_vals[i]) * ibin_widths[i+lo]
             
         # add bin avgs for this peak to the full array
         model_fluxes[lo:hi+1] += edge_vals[:nedges-1] 
@@ -225,8 +225,7 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
 # subsequent matrix-vector multiplies in the optimizer.
 #
 def EMLine_jacobian(free_parameters,
-                    obs_bin_edges,
-                    log_obs_bin_edges,
+                    bin_data,
                     obs_fluxes, # not used, but must match objective
                     obs_weights,
                     redshift,
@@ -243,20 +242,27 @@ def EMLine_jacobian(free_parameters,
     
     parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
+
+    log_obs_bin_edges, ibin_widths = bin_data
     
     J_S = params_mapping.getJacobian(free_parameters)
 
     jacs = []
     for icam, campix in enumerate(camerapix):
         s, e = campix
-        
+
+        # Actual bin widths are in ibw[1..e-s].
+        # Setup guarantees that ibw[0] and
+        # ibw[e-s+1] are not out of bounds.
+        ibw = ibin_widths[s:e+1]
+
         idealJac = \
             build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
-                                        obs_bin_edges[s+icam:e+icam+1],
                                         log_obs_bin_edges[s+icam:e+icam+1],
+                                        ibw,
                                         redshift,
                                         line_wavelengths)
-
+        
         # ignore any columns corresponding to fixed parameters
         endpts = idealJac[0]
         endpts[params_mapping.fixedMask(), :] = (0, 0)
@@ -311,19 +317,15 @@ def jacEstimateConditionNumber(J):
 #
 @jit(nopython=True, fastmath=False, nogil=True)
 def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
-                                obs_bin_edges,
                                 log_obs_bin_edges,
+                                ibin_widths,
                                 redshift,
                                 line_wavelengths):
 
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
 
-    # dummies before and after widths are needed
-    # for corner cases in edge -> bin computation
-    ibin_width = np.hstack((np.array([0.]),
-                            1. / np.diff(obs_bin_edges),
-                            np.array([0.])))
+    nbins = len(log_obs_bin_edges) - 1
     
     max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
@@ -359,7 +361,7 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
                              log_shifted_line + MAX_SDEV * sigma,
                              side="right")
                     
-        if hi == lo:  # Gaussian is entirely outside bounds of obs_bin_edges
+        if hi == lo:  # Gaussian is entirely outside bounds of log_obs_bin_edges
             continue
 
         nedges = hi - lo + 2 # compute values at edges [lo - 1 ... hi]
@@ -404,9 +406,9 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
         # (last value in each array is garbage)
         # we get values for bins lo-1 to hi-1 inclusive
         for i in range(nedges - 1):
-            dda_vals[i] = (dda_vals[i+1] - dda_vals[i]) * ibin_width[i+lo]
-            ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * ibin_width[i+lo]
-            dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * ibin_width[i+lo]
+            dda_vals[i] = (dda_vals[i+1] - dda_vals[i]) * ibin_widths[i+lo]
+            ddv_vals[i] = (ddv_vals[i+1] - ddv_vals[i]) * ibin_widths[i+lo]
+            dds_vals[i] = (dds_vals[i+1] - dds_vals[i]) * ibin_widths[i+lo]
         
         # starts[j] is set to first valid bin
         if lo == 0:
@@ -423,7 +425,7 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
             starts[j] = lo - 1
         
         # ends[j] is set one past last valid bin
-        if hi >= len(obs_bin_edges):
+        if hi >= nbins + 1:
             # bin hi - 1 is one past end of requested bins,
             # and its true right endpt value is unknown
             ends[j] = hi - 1
@@ -528,7 +530,7 @@ def mulWMJ(w, M, jac):
 # halfway between centers, with extrapolation at the ends.
 #
 @jit(nopython=True, fastmath=False, nogil=True)
-def bin_centers_to_edges(centers, camerapix):
+def prepare_bins(centers, camerapix):
 
     ncameras = camerapix.shape[0]
     edges = np.empty(len(centers) + ncameras, dtype=centers.dtype)
@@ -549,4 +551,10 @@ def bin_centers_to_edges(centers, camerapix):
         edges[s + icam + 1:e + icam] = int_edges
         edges[e + icam]              = edge_r
 
-    return edges
+    # dummies before and after widths are needed
+    # for corner cases in edge -> bin computation
+    ibin_widths = np.hstack((np.array([0.]),
+                             1. / np.diff(edges),
+                             np.array([0.])))
+    
+    return (np.log(edges), ibin_widths)
