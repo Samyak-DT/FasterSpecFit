@@ -229,7 +229,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
         try:
             fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
                                      xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
-                                     tr_solver='lsmr', tr_options={'regularize': True},
+                                     tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
                                      method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
             
             parameters[Ifree] = fit_info.x
@@ -263,7 +263,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 try:
                     fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
                                              xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
-                                             tr_solver='lsmr', tr_options={'regularize': True},
+                                             tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
                                              method='trf', bounds=tuple(zip(*bounds)))#, verbose=2)
                     parameters[Ifree] = fit_info.x
                 except:
@@ -597,7 +597,7 @@ def main():
     if args.build_test_data:
         build_test_data(args.datadir, ntargets=args.ntargets)
         return
-
+    
     fit_emlines(datadir=args.datadir, fast=args.fast)
         
 

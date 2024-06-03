@@ -20,20 +20,23 @@ class ParamsMapping(object):
         
         # permutation mapping each free parameter in full list
         # to its location in free list
-        p = np.empty(self.nParms, dtype=np.int32)
-        p[freeParms] = np.arange(self.nFreeParms, dtype=np.int32)
+        pFree = np.empty(self.nParms, dtype=np.int32)
+        pFree[freeParms] = np.arange(self.nFreeParms, dtype=np.int32)
         
         self._precomputeMapping(fixedParameters, freeParms,
                                 tiedParms, tiedSources, tiedFactors,
                                 doubletRatios, doubletSources,
-                                p)
-        
-        self._precomputeJacobian(freeParms,
-                                 tiedParms, tiedSources, tiedFactors,
-                                 doubletRatios, doubletSources,
-                                 p)
+                                pFree)
+
+        self._precomputeJacobian()
+
         
 
+    # return Boolean mask with "True" for each fixed parameter
+    def fixedMask(self):
+        return self.isFixed
+
+    
     #
     # mapFreeToFull()
     # Given a vector of free parameters, return the corresponding
@@ -55,22 +58,21 @@ class ParamsMapping(object):
     # doublet features.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _mapFreeToFull(freeParms, nParms, sources, factors, doubletPatches):
         
-        for i, src_j_free in doubletPatches:
-            factors[i] = freeParms[src_j_free]
+        for j, src_j_free in doubletPatches:
+            factors[j] = freeParms[src_j_free]
 
         fullParms = np.empty(nParms, dtype=freeParms.dtype)
 
-        for i, src in enumerate(sources):
-            fullParms[i] = factors[i] # copy fixed value
-            if src != -1:
-                fullParms[i] *= freeParms[src]
+        for j, src_j_free in enumerate(sources):
+            fullParms[j] = factors[j] # copy fixed value
+            if src_j_free != -1:
+                fullParms[j] *= freeParms[src_j_free]
         
         return fullParms
         
-    
     
     #
     # getJacobian()
@@ -80,10 +82,9 @@ class ParamsMapping(object):
     # (jacElts) and their values (jacFactors)
     #
     def getJacobian(self, freeParms):
-        for i, j_free, src_j_free in self.jacDoubletPatches:
-            self.jacFactors[i]   = freeParms[src_j_free]
-            self.jacFactors[i+1] = freeParms[j_free]
-        
+        for j, src_j_free in self.jacDoubletPatches:
+            self.jacFactors[j] = freeParms[src_j_free]
+
         return ((self.nParms, self.nFreeParms), self.jacElts, self.jacFactors)
     
 
@@ -91,11 +92,11 @@ class ParamsMapping(object):
     # Multiply parameter Jacobian J_S * v, writing result to w.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _matvec(J_S, v, w):
-    
-        shape, elts, factors = J_S
 
+        shape, elts, factors = J_S
+        
         for j in range(shape[0]): # total params
             w[j] = 0.
         
@@ -108,11 +109,11 @@ class ParamsMapping(object):
     # Multiply parameter Jacobian v * J_S^T, *adding* result to w.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
-    def _rmatvec(J_S, v, w):
+    @jit(nopython=True, fastmath=False, nogil=True)
+    def _add_rmatvec(J_S, v, w):
 
         _, elts, factors = J_S
-            
+        
         for i, (dst, src) in enumerate(elts):
             w[src] += factors[i] * v[dst]
 
@@ -157,63 +158,69 @@ class ParamsMapping(object):
             if j not in freeParms or src_j not in freeParms:
                 continue
 
-            sources[j] = p[src_j]  # factor will be patched dynamically
-            doubletPatches.append((j, p[j]))
-
+            # j's factor should be v[ p[j] ], so that its value
+            # becomes v[ p[j] ] * v[ p[src_j] ]. We will patch it
+            # dynamically at mapping time.
+            
+            sources[j] = p[src_j]
+            doubletPatches.append((j, p[j])) # record where to grab factor
+        
         self.sources = sources
         self.factors = factors
         self.doubletPatches = np.array(doubletPatches)
-        
+
+        # record fixed parameter mask
+        self.isFixed = (self.sources == -1)
+
         
     #
     # Precompute as much of the Jacobian of the transformation
     # from free parameters to full parameters as does not require
-    # knowledge of the free parameter values.
+    # knowledge of the free parameter values.  We rely on the
+    # precomputation for the mapping to avoid recalculating all
+    # the source/factor information.
     #
-    def _precomputeJacobian(self, freeParms,
-                            tiedParms, tiedSources, tiedFactors,
-                            doubletRatios, doubletSources,
-                            p):
-        jacElts = []
+    def _precomputeJacobian(self):
         
-        # free params present unchanged in full list
-        for j in freeParms:
-            jacElts.append((j, p[j], 1.))
+        isLive  = np.logical_not(self.isFixed)
+        liveIdx = np.where(isLive)[0]
+        nLive = len(liveIdx)
+        
+        # jacElts compresses the source/factor arrays to a sparse array
+        # of coefficients for just the live (non-fixed)
+        # parameters, plus second coeffs for each ratio param of a
+        # doublet pair.  We need not create entries for fixed parametesr
+        # because their derivatives w/r to the free parameters are zero.
+        nDoublets = len(self.doubletPatches)
+        nElts = nLive + nDoublets
+        jacElts = np.empty((nElts,2), dtype=np.int32)
+        jacFactors = np.empty(nElts, dtype=self.factors.dtype)
+        
+        jacElts[:nLive,0] = liveIdx
+        jacElts[:nLive,1] = self.sources[liveIdx]
+        jacFactors[:nLive] = self.factors[liveIdx]  # makes a copy
+        
+        # Create doublet patches for Jacobian w/r to compressed array,
+        # and record new patch locations
+        
+        # offsets of orig parms in live array
+        liveOffsets = np.cumsum(isLive) - isLive
+        
+        jacDoubletPatches = np.empty((2*len(self.doubletPatches), 2), dtype=np.int32)
+        
+        for i, (j, p_j) in enumerate(self.doubletPatches):
             
-        # tied params
-        for j, src_j, factor in zip(tiedParms, tiedSources, tiedFactors):
-            if src_j not in freeParms:
-                #print(f"SOURCE {src_j} tied to {j} is not free!")
-                # if source is fixed, so is target, so Jacobian contrib is 0
-                pass
-            else:
-                jacElts.append((j, p[src_j], factor))
-                
-        # create placeholders for doublets in sparse structure
-        # and record ops needed to compute Jacobian for given free params
-        jacDoubletPatches = []
-        for j, src_j in zip(doubletRatios, doubletSources):
-            #if j not in freeParms:
-            #    print(f"ratio {j} in doublet with {src_j} is not free!")
-            #if src_j not in freeParms:
-            #    print(f"amplitude {src_j} in doublet with {j} is not free!")
+            p_src_j = self.sources[j]
 
-            if j not in freeParms or src_j not in freeParms:
-                continue
+            # jacElts already has coefficient (j, p[src_j]).
+            # its factor should be patched from v[ p[j] ]
+            jacDoubletPatches[2*i,  :] = (liveOffsets[j], p_j)
             
-            jacElts.append((j, p[src_j], 0.)) # will set factor to v[j]
-            jacElts.append((j, p[j],     0.)) # will set fctor to v[src_j]
-
-            # record enough info to update values of above two elts given
-            # free paramter vector
-            jacDoubletPatches.append((len(jacElts) - 2, p[src_j], p[j]))
-
-        self.jacElts   = np.empty((len(jacElts), 2), dtype=np.int32)
-        self.jacFactors = np.empty(len(jacElts))
+            # add a second coefficient (j, p[j]).
+            # its factor should be patched from v[ p[src_j] ]
+            jacElts[nLive + i,:] = (j, p_j)
+            jacDoubletPatches[2*i+1,:] = (nLive + i, p_src_j)
         
-        for i, tup in enumerate(jacElts):
-            dst, src, factor = tup
-            self.jacElts[i] = (dst, src)
-            self.jacFactors[i] = factor
-        
-        self.jacDoubletPatches = np.array(jacDoubletPatches)
+        self.jacElts = jacElts
+        self.jacFactors = jacFactors
+        self.jacDoubletPatches = jacDoubletPatches

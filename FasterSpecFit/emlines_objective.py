@@ -20,7 +20,7 @@ MAX_SDEV = 5.
 # norm_pdf()
 # PDF of standard normal distribution at a point a
 #
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def norm_pdf(a):
 
     SQRT_2PI = np.sqrt(2 * np.pi)
@@ -36,7 +36,7 @@ def norm_pdf(a):
 # |a| > MAX_SDEV, treat the value as extreme and return 0 or 1 as
 # appropriate.
 #
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def norm_cdf(a):
 
     SQRT1_2 = 1.0 / np.sqrt(2)
@@ -82,11 +82,11 @@ def EMLine_objective(free_parameters,
     # parameter array, handling tied params
     # and doublets
     #
-    
     parameters = params_mapping.mapFreeToFull(free_parameters)
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
-    model_fluxes = np.empty_like(obs_fluxes)
+    model_fluxes = np.empty_like(obs_fluxes, dtype=obs_fluxes.dtype)
+    
     for icam, campix in enumerate(camerapix):
 
         # start and end for obs fluxes of camera icam
@@ -97,7 +97,7 @@ def EMLine_objective(free_parameters,
                                 log_obs_bin_edges[s+icam:e+icam+1],
                                 redshift,
                                 line_wavelengths)
-
+        
         # convolve model with resolution matrix and store in
         # this camera's subrange of model_fluxes
         resolution_matrices[icam].matvec(mf, model_fluxes[s:e])
@@ -127,7 +127,7 @@ def EMLine_objective(free_parameters,
 # RETURNS:
 #   vector of average fluxes in each observed wavelength bin
 #
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
                        obs_bin_edges,
                        log_obs_bin_edges,
@@ -149,14 +149,14 @@ def build_emline_model(line_amplitudes, line_vshifts, line_sigmas,
     # entry i corresponds bin i-1
     # entry 0 is a dummy in case lo == 0
     # last entry is a dummy in case hi == len(obs_bin_edges)
-    model_fluxes = np.zeros(nbins + 2)
+    model_fluxes = np.zeros(nbins + 2, dtype=line_amplitudes.dtype)
 
     # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ([lo - 1 .. hi])
     max_width = int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
                     np.min(np.diff(log_obs_bin_edges))) + 4
-    edge_vals = np.empty(max_width)
-
+    edge_vals = np.empty(max_width, dtype=model_fluxes.dtype)
+        
     # compute total area of all Gaussians inside each bin.
     # For each Gaussian, we only compute area contributions
     # for bins where it is non-negligible.
@@ -245,7 +245,7 @@ def EMLine_jacobian(free_parameters,
     lineamps, linevshifts, linesigmas = np.array_split(parameters, 3)
     
     J_S = params_mapping.getJacobian(free_parameters)
-    
+
     jacs = []
     for icam, campix in enumerate(camerapix):
         s, e = campix
@@ -256,18 +256,48 @@ def EMLine_jacobian(free_parameters,
                                         log_obs_bin_edges[s+icam:e+icam+1],
                                         redshift,
                                         line_wavelengths)
-        
+
+        # ignore any columns corresponding to fixed parameters
+        endpts = idealJac[0]
+        endpts[params_mapping.fixedMask(), :] = (0, 0)
         jacs.append( mulWMJ(obs_weights[s:e],
                             resolution_matrices[icam].data,
                             idealJac) )
-        
+    
     nBins = np.sum(np.diff(camerapix))
     nFreeParms = len(free_parameters)
     nParms = len(parameters)
-    return EMLineJacobian((nBins, nFreeParms), nParms,
-                          camerapix, jacs, J_S)
+    J =  EMLineJacobian((nBins, nFreeParms), nParms,
+                        camerapix, jacs, J_S)
+
+    #jacEstimateConditionNumber(J)
+    
+    return J
 
 
+#
+# for debugging -- compute singular values of Jacobian and estimate
+# its condition number.
+#
+def jacEstimateConditionNumber(J):
+
+    from scipi.sparse.linalg import svds
+    
+    _, nFreeParms = J[0]
+    
+    try:
+        svs = svds(J, return_singular_vectors=False,
+                   k=nFreeParms - 1, which="LM")
+        sv0 = svds(J, return_singular_vectors=False,
+                   k=1, which="SM")[0]
+        cond = svs[-1] / sv0
+        print(np.hstack((sv0, svs)))       
+        print(f"cond(J) = {cond:.3e}")
+        
+    except:
+        print("Failed to compute Jacobian condition number")
+
+    
 #
 # build_emline_model_jacobian() 
 #
@@ -279,7 +309,7 @@ def EMLine_jacobian(free_parameters,
 #  column j has nonzero values in interval [ endpts[j,0] , endpts[j,1] )
 #  which are stored in dd[j].
 #
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
                                 obs_bin_edges,
                                 log_obs_bin_edges,
@@ -299,7 +329,7 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
                     np.min(np.diff(log_obs_bin_edges))) + 4
     
     nlines = len(line_wavelengths)
-    dd     = np.empty((3 * nlines, max_width))
+    dd     = np.empty((3 * nlines, max_width), dtype=line_amplitudes.dtype)
     endpts = np.zeros((nlines, 2), dtype=np.int32)
 
     starts = endpts[:,0]
@@ -405,7 +435,7 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
 
 
 # replacement for np.tile, which is not supported by Numba
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def mytile(a, n):
     sz = a.shape[0]
     r = np.empty((n * sz, a.shape[1]), dtype=a.dtype)
@@ -413,6 +443,23 @@ def mytile(a, n):
         r[i*sz:(i+1)*sz,:] = a
     return r
 
+@jit(nopython=True, fastmath=False, nogil=True)
+def mulWJ(w, jac):
+    endpts, J = jac
+    ncol, _ = J.shape
+
+    for j in range(ncol):
+        # boundaries of nonzero entries
+        # in jth column of J
+        s, e = endpts[j]
+        
+        if s == e: # no nonzero values in column j
+            continue
+        
+        for i in range(s,e):
+            J[j, i - s] *= w[i]
+
+    return jac
 
 #
 # mulWMJ()
@@ -429,7 +476,7 @@ def mytile(a, n):
 # NB: for future, we should allocate enough extra space
 # in J to let us create P in place, overwriting J
 #
-@jit(nopython=True, fastmath=True, nogil=True)
+@jit(nopython=True, fastmath=False, nogil=True)
 def mulWMJ(w, M, jac):
 
     endpts, J = jac
@@ -438,7 +485,7 @@ def mulWMJ(w, M, jac):
     ncol, maxColSize = J.shape
     
     hdiag = ndiag//2
-    
+        
     P = np.empty((ncol, maxColSize + ndiag - 1), dtype=J.dtype)
     endptsP = np.zeros((ncol,2), dtype=np.int32)
     
@@ -449,7 +496,7 @@ def mulWMJ(w, M, jac):
         
         if s == e: # no nonzero values in column j
             continue
-        
+            
         # boundaries of entries in jth column of P
         # impacted by matrix multiply
         imin = np.maximum(s - hdiag, 0)

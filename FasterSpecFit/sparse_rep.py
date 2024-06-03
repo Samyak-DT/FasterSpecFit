@@ -11,6 +11,7 @@ from numba import jit
 
 from .params_mapping import ParamsMapping
 
+    
 #
 # resolution matrix
 # A resolution matrix M of size nrow x nrow is stored as a 2D array A of
@@ -40,14 +41,13 @@ class ResMatrix(object):
     # outside the bounds of M are ignored.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _from_dia_matrix(D):
-
         ndiag, nrow = D.shape
         hdiag = ndiag//2
 
         A = np.empty((nrow, ndiag), dtype=D.dtype)
-    
+        
         for i in range(nrow):
             # min and max column for row
             jmin = np.maximum(i - hdiag,        0)
@@ -68,9 +68,8 @@ class ResMatrix(object):
     # w is an output parameter
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _matvec(M, v, w):
-
         nrow, ndiag = M.shape
         hdiag = ndiag//2
         
@@ -125,7 +124,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         self.J_S       = J_S
         
         dtype = jacs[0][1].dtype
-        
+
         self.vFull = np.empty(nParms, dtype=dtype)
         
         super().__init__(dtype, shape)
@@ -148,7 +147,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
             
             # write result to w[s:e]
             self._matvec_J(jac, self.vFull, w[s:e])
-            
+        
         return w
 
     #
@@ -165,17 +164,17 @@ class EMLineJacobian(sp.linalg.LinearOperator):
             
             # return result in self.vFull
             self._rmatvec_J(jac, v[s:e], self.vFull)
-
+            
             # add result to w
-            ParamsMapping._rmatvec(self.J_S, self.vFull, w)
-        
+            ParamsMapping._add_rmatvec(self.J_S, self.vFull, w)
+            
         return w
-    
+
     #
     # Multiply ideal Jacobian J * v, writing result to w.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _matvec_J(J, v, w):
     
         endpts, values = J
@@ -196,7 +195,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     # Multiply ideal Jacobian v * J^T, writing result to w.
     #
     @staticmethod
-    @jit(nopython=True, fastmath=True, nogil=True)
+    @jit(nopython=True, fastmath=False, nogil=True)
     def _rmatvec_J(J, v, w):
     
         endpts, values = J
