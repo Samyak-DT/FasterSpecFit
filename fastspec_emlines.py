@@ -79,6 +79,11 @@ def read_test_data(datadir='.', ntargets=None):
             'mask': [],
             'res': [],
             'res_fast': [],
+            'linemask': [], 
+            'linemask_all': [], 
+            'linename': [],
+            'linepix': [], 
+            'contpix': [],
             'coadd_wave': coadd_spec.wave[coadd_cameras],
             'coadd_flux': coadd_spec.flux[coadd_cameras][iobj, :],
             'coadd_ivar': coadd_spec.ivar[coadd_cameras][iobj, :],
@@ -143,6 +148,26 @@ def read_test_data(datadir='.', ntargets=None):
 
         specdata['smoothsigma'] = coadd_linemask_dict['smoothsigma']
         
+        # Map the pixels belonging to individual emission lines and
+        # their local continuum back onto the original per-camera
+        # spectra. These lists of arrays are used in
+        # continuum.ContinnuumTools.smooth_continuum.
+        for icam in np.arange(len(specdata['cameras'])):
+            #specdata['smoothflux'].append(np.interp(specdata['wave'][icam], specdata['coadd_wave'], coadd_linemask_dict['smoothflux']))
+            specdata['linemask'].append(np.interp(specdata['wave'][icam], specdata['coadd_wave'], coadd_linemask_dict['linemask']*1) > 0)
+            specdata['linemask_all'].append(np.interp(specdata['wave'][icam], specdata['coadd_wave'], coadd_linemask_dict['linemask_all']*1) > 0)
+            _linename, _linenpix, _contpix = [], [], []
+            for ipix in np.arange(len(coadd_linemask_dict['linepix'])):
+                I = np.interp(specdata['wave'][icam], specdata['coadd_wave'], coadd_linemask_dict['linepix'][ipix]*1) > 0
+                J = np.interp(specdata['wave'][icam], specdata['coadd_wave'], coadd_linemask_dict['contpix'][ipix]*1) > 0
+                if np.sum(I) > 3 and np.sum(J) > 3:
+                    _linename.append(coadd_linemask_dict['linename'][ipix])
+                    _linenpix.append(np.where(I)[0])
+                    _contpix.append(np.where(J)[0])
+            specdata['linename'].append(_linename)
+            specdata['linepix'].append(_linenpix)
+            specdata['contpix'].append(_contpix)
+
         specdata.update({'coadd_linemask': coadd_linemask_dict['linemask'],
                          'coadd_linemask_all': coadd_linemask_dict['linemask_all']})
 
@@ -461,6 +486,7 @@ def fit_emlines(datadir='.', fast=False, ntargets=None):
     """Use the current (main) version of the emission-line fitting code.
 
     """
+    from astropy.table import Table, vstack
     from fastspecfit.emlines import EMFitTools
 
     t0 = time.time()    
@@ -518,17 +544,106 @@ def fit_emlines(datadir='.', fast=False, ntargets=None):
                  f'[niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
 
 
-        fit_broad, t_elapsed = emfit_optimize(EMFit, linemodel_broad, emlinewave, emlineflux, weights, redshift,
-                                              resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
-                                              fast=fast)
+        # Now try adding broad Balmer and helium lines and see if we improve the
+        # chi2.
+        if True:
+            # Gather the pixels around the broad Balmer lines and the corresponding
+            # linemodel table.
+            balmer_pix, balmer_linemodel_broad, balmer_linemodel_nobroad = [], [], []
+            for icam in np.arange(len(data['cameras'])):
+                pixoffset = int(np.sum(data['npixpercamera'][:icam]))
+                if len(data['linename'][icam]) > 0:
+                    I = (linemodel_nobroad['isbalmer'] * (linemodel_nobroad['ishelium'] == False) *
+                         linemodel_nobroad['isbroad'] * np.isin(linemodel_nobroad['linename'], data['linename'][icam]))
+                    _balmer_linemodel_broad = linemodel_broad[I]
+                    _balmer_linemodel_nobroad = linemodel_nobroad[I]
+                    balmer_linemodel_broad.append(_balmer_linemodel_broad)
+                    balmer_linemodel_nobroad.append(_balmer_linemodel_nobroad)
+                    if len(_balmer_linemodel_broad) > 0: # use balmer_linemodel_broad not balmer_linemodel_nobroad
+                        I = np.where(np.isin(data['linename'][icam], _balmer_linemodel_broad['linename']))[0]
+                        for ii in I:
+                            #print(data['linename'][icam][ii])
+                            balmer_pix.append(data['linepix'][icam][ii] + pixoffset)
+                            
+            if len(balmer_pix) > 0:
+                fit_broad, t_elapsed = emfit_optimize(EMFit, linemodel_broad, emlinewave, emlineflux, weights, redshift,
+                                                      resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
+                                                      fast=fast)
         
-        model_broad = EMFit.bestfit(fit_broad, redshift, emlinewave, resolution_matrix, camerapix)
-        chi2_broad, ndof_broad, nfree_broad = EMFit.chi2(fit_broad, emlinewave, emlineflux, emlineivar, model_broad, return_dof=True)
-        log.info(f'{iobj}: line-fitting with narrow+broad lines and {nfree_broad} free parameters took {t_elapsed:.3f} seconds '
-                 f'[niter={fit_broad.meta["nfev"]}, rchi2={chi2_broad:.4f}].')
-                
-        # write out...
+                model_broad = EMFit.bestfit(fit_broad, redshift, emlinewave, resolution_matrix, camerapix)
+                chi2_broad, ndof_broad, nfree_broad = EMFit.chi2(fit_broad, emlinewave, emlineflux, emlineivar, model_broad, return_dof=True)
+                log.info(f'{iobj}: line-fitting with broad lines and {nfree_broad} free parameters took {t_elapsed:.3f} seconds '
+                         f'[niter={fit_broad.meta["nfev"]}, rchi2={chi2_broad:.4f}].')
+    
+                # compute delta-chi2 around just the Balmer lines
+                balmer_pix = np.hstack(balmer_pix)
+                balmer_linemodel_broad = vstack(balmer_linemodel_broad)
+    
+                balmer_nfree_broad = (np.count_nonzero((balmer_linemodel_broad['fixed'] == False) *
+                                                       (balmer_linemodel_broad['tiedtoparam'] == -1)))
+                balmer_ndof_broad = np.count_nonzero(emlineivar[balmer_pix] > 0) - balmer_nfree_broad
+    
+                balmer_linemodel_nobroad = vstack(balmer_linemodel_nobroad)
+                balmer_nfree_nobroad = (np.count_nonzero((balmer_linemodel_nobroad['fixed'] == False) *
+                                                         (balmer_linemodel_nobroad['tiedtoparam'] == -1)))
+                balmer_ndof_nobroad = np.count_nonzero(emlineivar[balmer_pix] > 0) - balmer_nfree_nobroad
+    
+                linechi2_balmer_broad = np.sum(emlineivar[balmer_pix] * (emlineflux[balmer_pix] - model_broad[balmer_pix])**2)
+                linechi2_balmer_nobroad = np.sum(emlineivar[balmer_pix] * (emlineflux[balmer_pix] - model_nobroad[balmer_pix])**2)
+                delta_linechi2_balmer = linechi2_balmer_nobroad - linechi2_balmer_broad
+                delta_linendof_balmer = balmer_ndof_nobroad - balmer_ndof_broad
+    
+                # Choose broad-line model only if:
+                # --delta-chi2 > delta-ndof
+                # --broad_sigma < narrow_sigma
+                # --broad_sigma < 250
+    
+                dchi2test = delta_linechi2_balmer > delta_linendof_balmer
+                Hanarrow = fit_broad['param_name'] == 'halpha_sigma' # Balmer lines are tied to H-alpha even if out of range
+                Habroad = fit_broad['param_name'] == 'halpha_broad_sigma'
+                Bbroad = fit_broad['isbalmer'] * fit_broad['isbroad'] * (fit_broad['fixed'] == False) * EMFit.amp_balmer_bool
+                broadsnr = fit_broad[Bbroad]['obsvalue'].data * np.sqrt(fit_broad[Bbroad]['civar'].data)
+    
+                sigtest1 = fit_broad[Habroad]['value'][0] > EMFit.minsigma_balmer_broad
+                sigtest2 = (fit_broad[Habroad]['value'] > fit_broad[Hanarrow]['value'])[0]
+                if len(broadsnr) == 0:
+                    broadsnrtest = False
+                    _broadsnr = 0.
+                elif len(broadsnr) == 1:
+                    broadsnrtest =  broadsnr[-1] > EMFit.minsnr_balmer_broad
+                    _broadsnr = 'S/N ({}) = {:.1f}'.format(fit_broad[Bbroad]['linename'][-1], broadsnr[-1])
+                else:
+                    broadsnrtest =  np.any(broadsnr[-2:] > EMFit.minsnr_balmer_broad)
+                    _broadsnr = 'S/N ({}) = {:.1f}, S/N ({}) = {:.1f}'.format(
+                        fit_broad[Bbroad]['linename'][-2], broadsnr[-2], fit_broad[Bbroad]['linename'][-1], broadsnr[-1])
+    
+                if dchi2test and sigtest1 and sigtest2 and broadsnrtest:
+                    log.info('Adopting broad-line model:')
+                    log.info('  delta-chi2={:.1f} > delta-ndof={:.0f}'.format(delta_linechi2_balmer, delta_linendof_balmer))
+                    log.info('  sigma_broad={:.1f} km/s, sigma_narrow={:.1f} km/s'.format(fit_broad[Habroad]['value'][0], fit_broad[Hanarrow]['value'][0]))
+                    if _broadsnr:
+                        log.info('  {} > {:.0f}'.format(_broadsnr, EMFit.minsnr_balmer_broad))
+                    finalfit, finalmodel, finalchi2 = fit_broad, model_broad, chi2_broad
+                else:
+                    if dchi2test == False:
+                        log.info('Dropping broad-line model: delta-chi2={:.1f} < delta-ndof={:.0f}'.format(
+                            delta_linechi2_balmer, delta_linendof_balmer))
+                    elif sigtest1 == False:
+                        log.info('Dropping broad-line model: Halpha_broad_sigma {:.1f} km/s < {:.0f} km/s (delta-chi2={:.1f}, delta-ndof={:.0f}).'.format(
+                            fit_broad[Habroad]['value'][0], EMFit.minsigma_balmer_broad, delta_linechi2_balmer, delta_linendof_balmer))
+                    elif sigtest2 == False:
+                        log.info('Dropping broad-line model: Halpha_broad_sigma {:.1f} km/s < Halpha_narrow_sigma {:.1f} km/s (delta-chi2={:.1f}, delta-ndof={:.0f}).'.format(
+                            fit_broad[Habroad]['value'][0], fit_broad[Hanarrow]['value'][0], delta_linechi2_balmer, delta_linendof_balmer))
+                    elif broadsnrtest == False:
+                        log.info('Dropping broad-line model: {} < {:.0f}'.format(_broadsnr, EMFit.minsnr_balmer_broad))
+                    finalfit, finalmodel, finalchi2 = fit_nobroad, model_nobroad, chi2_nobroad
+            else:
+                log.info('Insufficient Balmer lines to test the broad-line model.')
+                finalfit, finalmodel, finalchi2 = fit_nobroad, model_nobroad, chi2_nobroad
+                delta_linechi2_balmer, delta_linendof_balmer = 0, np.int32(0)
 
+
+        # write out...
     
 
 
