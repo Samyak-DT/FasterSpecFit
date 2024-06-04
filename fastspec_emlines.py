@@ -157,9 +157,10 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     from scipy.optimize import least_squares
 
     if fast:
-        from FasterSpecFit import prepare_bins, ParamsMapping
+        from FasterSpecFit import EMLine_prepare_bins, EMLine_ParamsMapping
         from FasterSpecFit import EMLine_objective as objective
         from FasterSpecFit import EMLine_jacobian  as jacobian
+        from FasterSpecFit import EMLine_find_peak_amplitudes
     else:
         from fastspecfit.emlines import _objective_function as objective
 
@@ -184,12 +185,12 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     # The only difference between the old and new emline fitting is in the
     # arguments passed to the least_squares method
     if fast:
-
-        bin_data = prepare_bins(emlinewave, camerapix)
         
-        params_mapping = ParamsMapping(parameters, Ifree,
-                                       Itied, tiedtoparam, tiedfactor,
-                                       doubletindx, doubletpair)
+        bin_data = EMLine_prepare_bins(emlinewave, camerapix)
+        
+        params_mapping = EMLine_ParamsMapping(parameters, Ifree,
+                                              Itied, tiedtoparam, tiedfactor,
+                                              doubletindx, doubletpair)
         
         farg = (bin_data, emlineflux, weights, redshift,
                 linewaves, resolution_matrix_fast, camerapix,
@@ -220,11 +221,13 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 resolution_matrix, camerapix, parameters, ) + \
                 (Ifree, Itied, tiedtoparam, tiedfactor, doubletindx, 
                  doubletpair, linewaves)
+        
         jac = "2-point"
         
     if len(Ifree) == 0:
         fit_info = {'nfev': 0, 'status': 0}
     else:
+        
         FIT_TRIES = 2
         for fit_try in range(FIT_TRIES):
             try:
@@ -238,9 +241,9 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                     errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
                 else:
                     errmsg = 'Problem in scipy.optimize.least_squares.'
-                    log.critical(errmsg)
-                    raise RuntimeError(errmsg)
-
+                log.critical(errmsg)
+                raise RuntimeError(errmsg)
+            
             if fit_try < FIT_TRIES - 1:
                 # If the narrow-line sigma didn't change by more than ~one km/s from
                 # its initial guess, then something has gone awry, so perturb the
@@ -251,7 +254,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 sig_init = initial_guesses[S]
                 sig_final = parameters[Ifree][S]
                 G = np.abs(sig_init - sig_final) < 1.
-            
+                
                 if G.any():
                     log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
                     initial_guesses[S[G]] *= 0.9
@@ -276,68 +279,97 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     out_linemodel.meta['nfev'] = fit_info['nfev']
     out_linemodel.meta['status'] = fit_info['status']
     
-    # Get the final line-amplitudes, after resampling and convolution (see
-    # https://github.com/desihub/fastspecfit/issues/139). Some repeated code
-    # from build_emline_model...
     if get_finalamp:
-
-        from fastspecfit.util import trapz_rebin
         
         lineamps, linevshifts, linesigmas = np.array_split(parameters, 3) # 3 parameters per line
 
         # apply doublet rules
         lineamps[doubletindx] *= lineamps[doubletpair]
-
-        lineindxs = np.arange(len(lineamps))
         
-        I = lineamps > 0
-        if np.count_nonzero(I) > 0:
-            linevshifts = linevshifts[I]
-            linesigmas = linesigmas[I]
-            lineamps = lineamps[I]
-            linewaves = linewaves[I]
-            lineindxs = lineindxs[I]
-            
-            # demand at least 20 km/s for rendering the model
-            if np.any(linesigmas) < 20.:
-                linesigmas[linesigmas<20.] = 20.
-                
-            if camerapix is None:
-                minwave = emlinewave[0][0]-2.
-                maxwave = emlinewave[-1][-1]+2.
-            else:
-                minwave = emlinewave[0]-2.
-                maxwave = emlinewave[-1]+2.
-            
-            _emlinewave = []
-            for icam, campix in enumerate(camerapix):
-                _emlinewave.append(emlinewave[campix[0]:campix[1]])
+        if fast:
 
-            # line-width [log-10 Angstrom] and redshifted wavelength [log-10 Angstrom]
-            C_LIGHT = 299792.458
-            log10sigmas = linesigmas / C_LIGHT / np.log(10)                
-            linezwaves = np.log10(linewaves * (1.0 + redshift + linevshifts / C_LIGHT))
+            #
+            # calculate the observed maximum amplitude for each
+            # fitted spectral line after convolution with the resolution
+            # matrix.
+            #
+            peaks = EMLine_find_peak_amplitudes(parameters,
+                                                bin_data,
+                                                redshift,
+                                                linewaves,
+                                                resolution_matrix_fast,
+                                                camerapix)
             
-            for lineindx, lineamp, linezwave, log10sigma in zip(lineindxs, lineamps, linezwaves, log10sigmas):
-                log10wave = np.arange(linezwave - (5 * log10sigma), linezwave + (5 * log10sigma), emfit.dlog10wave)
-                log10wave = np.hstack((np.log10(minwave), log10wave, np.log10(maxwave)))
-                log10model = lineamp * np.exp(-0.5 * (log10wave-linezwave)**2 / log10sigma**2)
-                # Determine which camera we're on and then resample and
-                # convolve with the resolution matrix.
-                icam = np.argmin([np.abs((np.max(emwave)-np.min(emwave))/2+np.min(emwave)-10**linezwave) for emwave in _emlinewave])
-                model_resamp = trapz_rebin(10**log10wave, log10model, _emlinewave[icam])
-                model_convol = resolution_matrix[icam].dot(model_resamp)
-                out_linemodel['obsvalue'][lineindx] = np.max(model_convol)
+            out_linemodel['obsvalue'][:len(lineamps)] = peaks
+            
+        else:
+            from fastspecfit.util import trapz_rebin
+            
+            # Get the final line-amplitudes, after resampling and convolution (see
+            # https://github.com/desihub/fastspecfit/issues/139). Some repeated code
+            # from build_emline_model...
+            
+            lineindxs = np.arange(len(lineamps))
+
+            I = lineamps > 0
+            if np.count_nonzero(I) > 0:
+                linevshifts = linevshifts[I]
+                linesigmas = linesigmas[I]
+                lineamps = lineamps[I]
+                linewaves = linewaves[I]
+                lineindxs = lineindxs[I]
+            
+                # demand at least 20 km/s for rendering the model
+                if np.any(linesigmas) < 20.:
+                    linesigmas[linesigmas<20.] = 20.
                 
-            """
-            import matplotlib.pyplot as plt
-            bestfit = emfit.bestfit(out_linemodel, redshift, emlinewave, resolution_matrix, camerapix)
-            plt.clf()
-            plt.plot(emlinewave, emlineflux, label='data', color='gray', lw=4)
-            plt.plot(emlinewave, bestfit, label='bestfit', ls='--', lw=3, alpha=0.7, color='k')
-            plt.legend()
-            plt.savefig('fit.png')
-            """
+                if camerapix is None:
+                    minwave = emlinewave[0][0]-2.
+                    maxwave = emlinewave[-1][-1]+2.
+                else:
+                    minwave = emlinewave[0]-2.
+                    maxwave = emlinewave[-1]+2.
+            
+                _emlinewave = []
+                for icam, campix in enumerate(camerapix):
+                    _emlinewave.append(emlinewave[campix[0]:campix[1]])
+
+                # line-width [log-10 Angstrom] and redshifted wavelength [log-10 Angstrom]
+                C_LIGHT = 299792.458
+                log10sigmas = linesigmas / C_LIGHT / np.log(10)                
+                linezwaves = np.log10(linewaves * (1.0 + redshift + linevshifts / C_LIGHT))
+            
+                for lineindx, lineamp, linezwave, log10sigma in zip(lineindxs, lineamps, linezwaves, log10sigmas):
+                    log10wave = np.arange(linezwave - (5 * log10sigma), linezwave + (5 * log10sigma), emfit.dlog10wave)
+                    log10wave = np.hstack((np.log10(minwave), log10wave, np.log10(maxwave)))
+                    log10model = lineamp * np.exp(-0.5 * (log10wave-linezwave)**2 / log10sigma**2)
+                    # Determine which camera we're on and then resample and
+                    # convolve with the resolution matrix.
+                    icam = np.argmin([np.abs((np.max(emwave)-np.min(emwave))/2+np.min(emwave)-10**linezwave) for emwave in _emlinewave])
+                    model_resamp = trapz_rebin(10**log10wave, log10model, _emlinewave[icam])
+                                        
+                    model_convol = resolution_matrix[icam].dot(model_resamp)
+                    out_linemodel['obsvalue'][lineindx] = np.max(model_convol)
+
+        """
+        peaks0 = out_linemodel['obsvalue'][lineindxs].data
+        peaks1 = peaks[lineindxs]
+
+        for p0, p1 in zip(peaks0, peaks1):
+            if np.abs(p1 - p0) / np.maximum(p0, p1) > 1e-2:
+                print(p0, p1)
+
+        """
+        
+        """
+        import matplotlib.pyplot as plt
+        bestfit = emfit.bestfit(out_linemodel, redshift, emlinewave, resolution_matrix, camerapix)
+        plt.clf()
+        plt.plot(emlinewave, emlineflux, label='data', color='gray', lw=4)
+        plt.plot(emlinewave, bestfit, label='bestfit', ls='--', lw=3, alpha=0.7, color='k')
+        plt.legend()
+        plt.savefig('fit.png')
+        """
             
     return out_linemodel, (t1 - t0)
 
