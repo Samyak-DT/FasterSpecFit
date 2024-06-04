@@ -490,7 +490,7 @@ def fit_emlines(datadir='.', fast=False):
             data, emlinewave, emlineflux, log=log)
         
         EMFit.populate_linemodel(linemodel_nobroad, initial_guesses, param_bounds, log=log)
-        #EMFit.populate_linemodel(linemodel_broad, initial_guesses, param_bounds, log=log)
+        EMFit.populate_linemodel(linemodel_broad, initial_guesses, param_bounds, log=log)
         
         emlineivar = np.hstack(data['ivar'])
         camerapix = data['camerapix']
@@ -514,6 +514,16 @@ def fit_emlines(datadir='.', fast=False):
         chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
         log.info(f'{iobj}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_elapsed:.3f} seconds '
                  f'[niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
+
+
+        fit_broad, t_elapsed = emfit_optimize(EMFit, linemodel_broad, emlinewave, emlineflux, weights, redshift,
+                                              resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
+                                              fast=fast)
+        
+        model_broad = EMFit.bestfit(fit_broad, redshift, emlinewave, resolution_matrix, camerapix)
+        chi2_broad, ndof_broad, nfree_broad = EMFit.chi2(fit_broad, emlinewave, emlineflux, emlineivar, model_broad, return_dof=True)
+        log.info(f'{iobj}: line-fitting with narrow+broad lines and {nfree_broad} free parameters took {t_elapsed:.3f} seconds '
+                 f'[niter={fit_broad.meta["nfev"]}, rchi2={chi2_broad:.4f}].')
                 
         # write out...
 
