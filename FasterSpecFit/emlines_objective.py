@@ -76,7 +76,6 @@ def max_buffer_width(log_obs_bin_edges, line_sigmas, padding=0):
         int(2*MAX_SDEV*np.max(line_sigmas/C_LIGHT) / \
             np.min(np.diff(log_obs_bin_edges))) + \
             2*padding + 4
-    
     return max_width
 
 """
@@ -371,7 +370,8 @@ def find_peak_amplitudes(parameters,
                                             lineamps, linevshifts, linesigmas,
                                             log_obs_bin_edges[s+icam:e+icam+1],
                                             redshift,
-                                            ibw)
+                                            ibw,
+                                            resolution_matrices[icam].ndiag())
         
         # convolve each line's waveform with resolution matrix
         line_models = mulWMJ(np.ones(e - s),
@@ -422,13 +422,14 @@ def emline_perline_models(line_wavelengths,
                           line_amplitudes, line_vshifts, line_sigmas,
                           log_obs_bin_edges,
                           redshift,
-                          ibin_widths):
+                          ibin_widths,
+                          padding):
     
     nbins = len(log_obs_bin_edges) - 1
     
     # buffers for per-line calculations, sized large
     # enough for max possible range [s .. e)
-    max_width = max_buffer_width(log_obs_bin_edges, line_sigmas)
+    max_width = max_buffer_width(log_obs_bin_edges, line_sigmas, padding)
     
     nlines = len(line_wavelengths)
     line_profiles = np.empty((nlines, max_width), dtype=line_amplitudes.dtype)
@@ -516,7 +517,8 @@ def jacobian(free_parameters,
                                         log_obs_bin_edges[s+icam:e+icam+1],
                                         ibw,
                                         redshift,
-                                        line_wavelengths)
+                                        line_wavelengths,
+                                        resolution_matrices[icam].ndiag())
         
         # ignore any columns corresponding to fixed parameters
         endpts = idealJac[0]
@@ -550,7 +552,8 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
                                 log_obs_bin_edges,
                                 ibin_widths,
                                 redshift,
-                                line_wavelengths):
+                                line_wavelengths,
+                                padding):
 
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
@@ -559,7 +562,7 @@ def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
 
     # buffers for per-parameter calculations, sized large
     # enough for line's max possible range [s .. e)
-    max_width = max_buffer_width(log_obs_bin_edges, line_sigmas)
+    max_width = max_buffer_width(log_obs_bin_edges, line_sigmas, padding)
     
     nlines = len(line_wavelengths)
     dd     = np.empty((3 * nlines, max_width), dtype=line_amplitudes.dtype)
@@ -703,11 +706,10 @@ def tile_2d(a, n):
 #   J is a column-sparse matrix giving the nonzero
 #     values in one contiguous range per column
 #
-# Return the result P as a column-sparse matrix in the
-# same form as J.
-#
-# NB: for future, we should allocate enough extra space
-# in J to let us create P in place, overwriting J
+# We assume that J jac has enough free space in
+# each column to store the results of the multiply
+# and update it in place, returning the same
+# jac as our return value.
 #
 @jit(nopython=True, fastmath=False, nogil=True)
 def mulWMJ(w, M, jac):
@@ -718,10 +720,10 @@ def mulWMJ(w, M, jac):
     ncol, maxColSize = J.shape
     
     hdiag = ndiag//2
+
+    # temporary buffer for each column of WMJ
+    buf = np.empty(maxColSize, dtype=J.dtype)
         
-    P = np.empty((ncol, maxColSize + ndiag - 1), dtype=J.dtype)
-    endptsP = np.zeros((ncol,2), dtype=np.int32)
-    
     for j in range(ncol):
         # boundaries of nonzero entries
         # in jth column of J
@@ -729,7 +731,7 @@ def mulWMJ(w, M, jac):
         
         if s == e: # no nonzero values in column j
             continue
-            
+        
         # boundaries of entries in jth column of P
         # impacted by matrix multiply
         imin = np.maximum(s - hdiag, 0)
@@ -741,16 +743,19 @@ def mulWMJ(w, M, jac):
             # M[i, k] and J[k, j] are nonzero.
             kmin = np.maximum(i - hdiag,     s)
             kmax = np.minimum(i + hdiag, e - 1)
-        
+            
             acc = 0.
             for k in range(kmin, kmax + 1):
                 acc += M[i, k - i + hdiag] * J[j, k - s]
-            P[j, i - imin] = acc * w[i]
+            buf[i - imin] = acc * w[i]
 
-        endptsP[j] = np.array([np.maximum(imin, 0),
-                               np.minimum(imax, nbins)])
-        
-    return (endptsP, P)
+        # write result back to J and update endpts for col
+        newS = np.maximum(imin, 0)
+        newE = np.minimum(imax, nbins)
+        J[j, :newE - newS] = buf[:newE - newS]
+        endpts[j] = np.array([newS, newE])
+    
+    return (endpts, J)
 
 
 ###############################################################################

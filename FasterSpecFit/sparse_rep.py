@@ -25,7 +25,10 @@ class ResMatrix(object):
 
     def __init__(self, D):
         self.data = self._from_dia_matrix(D)
-
+    
+    def ndiag(self):
+        return self.data.shape[1]
+    
     def matvec(self, v, w):
         self._matvec(self.data, v, w)
         
