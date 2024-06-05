@@ -150,6 +150,12 @@ class EMLineJacobian(LinearOperator):
         
         return w
 
+
+    #
+    # Compute left matrix-matrix product J * M
+    # We do this just to avoid needing to ravel
+    # v in the more commonly used _matvec()
+    #
     def _matmat(self, M):
 
         nBins = self.shape[0]
@@ -157,7 +163,8 @@ class EMLineJacobian(LinearOperator):
         R = np.empty((nVecs, nBins), dtype=M.dtype) # transpose of result
 
         for i in range(nVecs):
-
+            w = R[i,:]
+            
             # return result in self.vFull
             ParamsMapping._matvec(self.J_S, M[:,i].ravel(), self.vFull)
 
@@ -165,10 +172,10 @@ class EMLineJacobian(LinearOperator):
                 s, e = campix
 
                 # write result to w[s:e]
-                self._matvec_J(jac, self.vFull, R[i,s:e])
+                self._matvec_J(jac, self.vFull, w[s:e])
                 
         return R.T
-
+    
         
     #
     # Compute right matrix product product v * J^T
@@ -207,7 +214,7 @@ class EMLineJacobian(LinearOperator):
         for i in range(nvars):
             s, e = endpts[i]
             vals = values[i]    # column i
-
+            
             for j in range(e - s):
                 w[j + s] += vals[j] * v[i]  
     
