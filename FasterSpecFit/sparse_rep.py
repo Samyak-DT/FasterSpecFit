@@ -120,7 +120,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
     def __init__(self, shape, nParms, camerapix, jacs, J_S):
         
         self.camerapix = camerapix
-        self.jacs      = jacs
+        self.jacs      = tuple(jacs)
         self.J_S       = J_S
         
         dtype = jacs[0][1].dtype
@@ -140,7 +140,7 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         w = np.empty(nBins, dtype=v.dtype)
         
         # return result in self.vFull
-        ParamsMapping._matvec(self.J_S, v.ravel(), self.vFull)
+        ParamsMapping._matvec(self.J_S, v, self.vFull)
         
         for campix, jac in zip(self.camerapix, self.jacs):
             s, e = campix
@@ -150,6 +150,26 @@ class EMLineJacobian(sp.linalg.LinearOperator):
         
         return w
 
+    def _matmat(self, M):
+
+        nBins = self.shape[0]
+        nVecs = M.shape[1]
+        R = np.empty((nVecs, nBins), dtype=M.dtype) # transpose of result
+
+        for i in range(nVecs):
+
+            # return result in self.vFull
+            ParamsMapping._matvec(self.J_S, M[:,i].ravel(), self.vFull)
+
+            for campix, jac in zip(self.camerapix, self.jacs):
+                s, e = campix
+
+                # write result to w[s:e]
+                self._matvec_J(jac, self.vFull, R[i,s:e])
+                
+        return R.T
+
+        
     #
     # Compute right matrix product product v * J^T
     # |v| = number of observable bins

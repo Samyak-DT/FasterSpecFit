@@ -220,7 +220,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                                               doubletindx, doubletpair)
         
         farg = (bin_data, emlineflux, weights, redshift,
-                linewaves, resolution_matrix_fast, camerapix,
+                linewaves, tuple(resolution_matrix_fast), camerapix,
                 params_mapping)
         
         jac = jacobian
@@ -259,7 +259,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
         for fit_try in range(FIT_TRIES):
             try:
                 fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
-                                         xtol=1e-10, #x_scale='jac', #ftol=1e-10, gtol=1e-10,
+                                         xtol=1e-10, #ftol=1e-5, #x_scale='jac' gtol=1e-10,
                                          tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
                                          method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
                 parameters[Ifree] = fit_info.x
@@ -659,6 +659,11 @@ def main():
     parser.add_argument('--ntargets', type=int, default=None, help='For testing, test on ntargets objects.')
     args = parser.parse_args()
 
+    # disable mutithreaded linear algebra in numpy/scipy, which
+    # actually makes fastspecfit slower
+    os.environ["MKL_NUM_THREADS"]      = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    
     fit_emlines(datadir=args.datadir, fast=args.fast, ntargets=args.ntargets)
         
 
