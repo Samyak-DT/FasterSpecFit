@@ -5,7 +5,7 @@
 #
 
 import numpy as np
-import scipy.sparse as sp
+from scipy.sparse.linalg import LinearOperator
 
 from numba import jit
 
@@ -105,7 +105,7 @@ class ResMatrix(object):
 # while J_S has either one or two nonzero entries
 # per row.
 #
-class EMLineJacobian(sp.linalg.LinearOperator):
+class EMLineJacobian(LinearOperator):
     
     #
     # CONSTRUCTOR ARGS:
