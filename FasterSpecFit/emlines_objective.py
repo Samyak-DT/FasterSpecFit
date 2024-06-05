@@ -142,11 +142,11 @@ def objective(free_parameters,
         # ibw[e-s+1] are dummy values
         ibw = ibin_widths[s:e+2]
         
-        mf = build_emline_model(line_wavelengths,
-                                lineamps, linevshifts, linesigmas,
-                                log_obs_bin_edges[s+icam:e+icam+1],
-                                redshift,
-                                ibw)
+        mf = emline_model(line_wavelengths,
+                          lineamps, linevshifts, linesigmas,
+                          log_obs_bin_edges[s+icam:e+icam+1],
+                          redshift,
+                          ibw)
         
         # convolve model with resolution matrix and store in
         # this camera's subrange of model_fluxes
@@ -156,7 +156,7 @@ def objective(free_parameters,
 
 
 #
-# build_emline_model() 
+# emline_model() 
 #
 # Given a fixed set of spectral lines and known redshift, and estimates
 # for the amplitude, width, and velocity shift of each line, compute the
@@ -177,11 +177,11 @@ def objective(free_parameters,
 #   vector of average fluxes in each observed wavelength bin
 #
 @jit(nopython=True, fastmath=False, nogil=True)
-def build_emline_model(line_wavelengths,
-                       line_amplitudes, line_vshifts, line_sigmas,
-                       log_obs_bin_edges,
-                       redshift,
-                       ibin_widths):
+def emline_model(line_wavelengths,
+                 line_amplitudes, line_vshifts, line_sigmas,
+                 log_obs_bin_edges,
+                 redshift,
+                 ibin_widths):
     
     # temporary buffer for per-line calculations, sized large
     # enough for whatever we may need to compute ( [s..e) )
@@ -414,7 +414,7 @@ def update_line_maxima(max_amps, line_models):
 # described by log_bin_edges.  The waveforms are returned
 # sparsely in the same forma as the Jacobian below.
 #
-# This function shares the core computation of build_emline_model()
+# This function shares the core computation of emline_model()
 # but does not collapse the lines into one composite.
 #
 @jit(nopython=True, fastmath=False, nogil=True)
@@ -513,16 +513,17 @@ def jacobian(free_parameters,
         ibw = ibin_widths[s:e+1]
 
         idealJac = \
-            build_emline_model_jacobian(lineamps, linevshifts, linesigmas,
-                                        log_obs_bin_edges[s+icam:e+icam+1],
-                                        ibw,
-                                        redshift,
-                                        line_wavelengths,
-                                        resolution_matrices[icam].ndiag())
+            emline_model_jacobian(lineamps, linevshifts, linesigmas,
+                                  log_obs_bin_edges[s+icam:e+icam+1],
+                                  ibw,
+                                  redshift,
+                                  line_wavelengths,
+                                  resolution_matrices[icam].ndiag())
         
         # ignore any columns corresponding to fixed parameters
         endpts = idealJac[0]
         endpts[params_mapping.fixedMask(), :] = (0,0)
+        
         jacs.append( mulWMJ(obs_weights[s:e],
                             resolution_matrices[icam].data,
                             idealJac) )
@@ -537,10 +538,10 @@ def jacobian(free_parameters,
 
     
 #
-# build_emline_model_jacobian() 
+# emline_model_jacobian() 
 #
-# Compute the Jacobian of the function computed in build_emlines_model().
-# Inputs are as for build_emlines_model().
+# Compute the Jacobian of the function computed in emlines_model().
+# Inputs are as for emlines_model().
 #
 # RETURNS:
 # Sparse Jacobian as tuple (endpts, dd), where
@@ -548,12 +549,12 @@ def jacobian(free_parameters,
 #  which are stored in dd[j].
 #
 @jit(nopython=True, fastmath=False, nogil=True)
-def build_emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
-                                log_obs_bin_edges,
-                                ibin_widths,
-                                redshift,
-                                line_wavelengths,
-                                padding):
+def emline_model_jacobian(line_amplitudes, line_vshifts, line_sigmas,
+                          log_obs_bin_edges,
+                          ibin_widths,
+                          redshift,
+                          line_wavelengths,
+                          padding):
 
     C_LIGHT = 299792.458
     SQRT_2PI = np.sqrt(2*np.pi)
