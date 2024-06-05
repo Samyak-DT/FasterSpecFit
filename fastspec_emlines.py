@@ -26,7 +26,10 @@ log = get_logger(INFO)
 
 from FasterSpecFit import ResMatrix
 
-def read_test_data(datadir='.', ntargets=None):
+# if > 1, repeat optimize() calls for more accurate timings
+NTRIALS = 1
+        
+def read_test_data(datadir='.', start=0, ntargets=None):
     """Read the test data.
 
     """
@@ -53,8 +56,9 @@ def read_test_data(datadir='.', ntargets=None):
     zb.remove_column('TARGETID')
     meta = hstack((fm, zb))#, tsnr2))    
 
-    if ntargets is not None and ntargets <= len(meta):
-        meta = meta[:ntargets]
+    if ntargets is None:
+        ntargets = len(meta)
+    meta = meta[start:start+ntargets]
 
     # pack into a dictionary - fastspecfit.io.DESISpectra().read_and_unpack()
     
@@ -259,7 +263,7 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
         for fit_try in range(FIT_TRIES):
             try:
                 fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
-                                         xtol=1e-10, #ftol=1e-5, #x_scale='jac' gtol=1e-10,
+                                         xtol=1e-10, ftol=1e-5, #x_scale='jac' gtol=1e-10,
                                          tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
                                          method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
                 parameters[Ifree] = fit_info.x
@@ -379,16 +383,6 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                     out_linemodel['obsvalue'][lineindx] = np.max(model_convol)
 
         """
-        peaks0 = out_linemodel['obsvalue'][lineindxs].data
-        peaks1 = peaks[lineindxs]
-
-        for p0, p1 in zip(peaks0, peaks1):
-            if np.abs(p1 - p0) / np.maximum(p0, p1) > 1e-2:
-                print(p0, p1)
-
-        """
-        
-        """
         import matplotlib.pyplot as plt
         bestfit = emfit.bestfit(out_linemodel, redshift, emlinewave, resolution_matrix, camerapix)
         plt.clf()
@@ -482,7 +476,7 @@ def drop_params(parameters, emfit, linemodel, Ifree):
     #          forbidden lines!
 
         
-def fit_emlines(datadir='.', fast=False, ntargets=None):
+def fit_emlines(datadir='.', fast=False, start=0, ntargets=None):
     """Use the current (main) version of the emission-line fitting code.
 
     """
@@ -490,7 +484,7 @@ def fit_emlines(datadir='.', fast=False, ntargets=None):
     from fastspecfit.emlines import EMFitTools
 
     t0 = time.time()    
-    specdata = read_test_data(datadir=datadir, ntargets=ntargets)
+    specdata = read_test_data(datadir=datadir, start=start, ntargets=ntargets)
     t1 = time.time()
     log.info(f'Gathering the data took {t1-t0:.2f} seconds.')
 
@@ -533,14 +527,17 @@ def fit_emlines(datadir='.', fast=False, ntargets=None):
             emfit_optimize(EMFit, linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
                            resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
                            fast=fast)
-            
-        fit_nobroad, t_elapsed = emfit_optimize(EMFit, linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
-                                                resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
-                                                fast=fast)
+
+        t_total = 0.
+        for tr in range(NTRIALS):
+            fit_nobroad, t_elapsed = emfit_optimize(EMFit, linemodel_nobroad, emlinewave, emlineflux, weights, redshift,
+                                                    resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
+                                                    fast=fast)
+            t_total += t_elapsed
         
         model_nobroad = EMFit.bestfit(fit_nobroad, redshift, emlinewave, resolution_matrix, camerapix)
         chi2_nobroad, ndof_nobroad, nfree_nobroad = EMFit.chi2(fit_nobroad, emlinewave, emlineflux, emlineivar, model_nobroad, return_dof=True)
-        log.info(f'{iobj}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_elapsed:.3f} seconds '
+        log.info(f'{iobj+start}: line-fitting with no broad lines and {nfree_nobroad} free parameters took {t_total/NTRIALS:.3f} seconds '
                  f'[niter={fit_nobroad.meta["nfev"]}, rchi2={chi2_nobroad:.4f}].')
 
 
@@ -566,15 +563,18 @@ def fit_emlines(datadir='.', fast=False, ntargets=None):
                             balmer_pix.append(data['linepix'][icam][ii] + pixoffset)
                             
             if len(balmer_pix) > 0:
-                fit_broad, t_elapsed = emfit_optimize(EMFit, linemodel_broad, emlinewave, emlineflux, weights, redshift,
-                                                      resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
-                                                      fast=fast)
-        
+                t_total = 0.
+                for tr in range(NTRIALS):
+                    fit_broad, t_elapsed = emfit_optimize(EMFit, linemodel_broad, emlinewave, emlineflux, weights, redshift,
+                                                          resolution_matrix, resolution_matrix_fast, camerapix, log=log, debug=False, get_finalamp=True,
+                                                          fast=fast)
+                    t_total += t_elapsed
+                    
                 model_broad = EMFit.bestfit(fit_broad, redshift, emlinewave, resolution_matrix, camerapix)
                 chi2_broad, ndof_broad, nfree_broad = EMFit.chi2(fit_broad, emlinewave, emlineflux, emlineivar, model_broad, return_dof=True)
-                log.info(f'{iobj}: line-fitting with broad lines and {nfree_broad} free parameters took {t_elapsed:.3f} seconds '
+                log.info(f'{iobj+start}: line-fitting with broad lines and {nfree_broad} free parameters took {t_total/NTRIALS:.3f} seconds '
                          f'[niter={fit_broad.meta["nfev"]}, rchi2={chi2_broad:.4f}].')
-    
+                
                 # compute delta-chi2 around just the Balmer lines
                 balmer_pix = np.hstack(balmer_pix)
                 balmer_linemodel_broad = vstack(balmer_linemodel_broad)
@@ -656,6 +656,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--fast', action='store_true', help='Build the refactored, fast emission-line fitting code.')
     parser.add_argument('--datadir', type=str, default="./data", help='I/O directory.')
+    parser.add_argument('--start', type=int, default=0, help='For testing, test on ntargets objects.')
     parser.add_argument('--ntargets', type=int, default=None, help='For testing, test on ntargets objects.')
     args = parser.parse_args()
 
@@ -664,10 +665,8 @@ def main():
     os.environ["MKL_NUM_THREADS"]      = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     
-    fit_emlines(datadir=args.datadir, fast=args.fast, ntargets=args.ntargets)
+    fit_emlines(datadir=args.datadir, fast=args.fast, start=args.start, ntargets=args.ntargets)
         
 
 if __name__ == '__main__':
     main()
-
-
