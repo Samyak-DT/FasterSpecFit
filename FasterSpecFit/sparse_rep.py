@@ -201,6 +201,26 @@ class EMLineJacobian(LinearOperator):
         return w
 
     #
+    # col_norms()
+    # Return the column norms of the Jacobian
+    #
+    def col_norms(self):
+        
+        norms = np.empty(self.shape[1], dtype=self.jacs[0][1].dtype)
+        
+        v = np.zeros(self.shape[0])
+        for i in range(self.shape[1]):
+
+            v[i] = 1.
+            
+            w = self._matvec(v)
+            norms[i] = np.sqrt(np.sum(w * w))
+            
+            v[i] = 0.
+            
+        return norms
+    
+    #
     # Multiply ideal Jacobian J * v, writing result to w.
     #
     @staticmethod
