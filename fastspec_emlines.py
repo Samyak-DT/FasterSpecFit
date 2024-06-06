@@ -44,9 +44,23 @@ def read_test_data(datadir='.', start=0, ntargets=None):
     CTools = ContinuumTools()
         
     # read the data - fastspecfit.io.DESISpectra().select()
-    coaddfile = os.path.join(datadir, 'coadd-test-data2.fits')
-    redrockfile = os.path.join(datadir, 'redrock-test-data2.fits')
+
+    # previously data2
+    coaddfile = os.path.join(datadir, 'coadd-sv1-bright-5060.fits')
+    redrockfile = os.path.join(datadir, 'redrock-sv1-bright-5060.fits')
+    #fastfile = os.path.join(datadir, 'fastspec-sv1-bright-5060.fits')
+
+    #coaddfile = os.path.join(datadir, 'coadd-test-data2.fits')
+    #redrockfile = os.path.join(datadir, 'redrock-test-data2.fits')
     #fastfile = os.path.join(datadir, 'fastspec-test-data2.fits')
+
+    #coaddfile = os.path.join(datadir, 'coadd-sv3-bright-28119.fits')
+    #redrockfile = os.path.join(datadir, 'redrock-sv3-bright-28119.fits')
+    ##fastfile = os.path.join(datadir, 'fastspec-sv3-bright-28119.fits')
+
+    #coaddfile = os.path.join(datadir, 'coadd-sv3-dark-25960.fits')
+    #redrockfile = os.path.join(datadir, 'redrock-sv3-dark-25960.fits')
+    ##fastfile = os.path.join(datadir, 'fastspec-sv3-dark-25960.fits')
 
     spec = read_spectra(coaddfile)
 
@@ -210,7 +224,10 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
     # happen at high redshift and with the red camera masked, e.g.,
     # iron/main/dark/6642/39633239580608311).
     initial_guesses = parameters[Ifree]
-    
+    #if True:
+    #    S = np.where(emfit.sigma_param_bool[Ifree] * (linemodel['isbroad'][Ifree] == False))[0]    
+    #    initial_guesses[S] *= 1.5
+
     t0 = time.time()
 
     # The only difference between the old and new emline fitting is in the
@@ -284,10 +301,12 @@ def emfit_optimize(emfit, linemodel, emlinewave, emlineflux, weights, redshift,
                 S = np.where(emfit.sigma_param_bool[Ifree] * (linemodel['isbroad'][Ifree] == False))[0]
                 sig_init = initial_guesses[S]
                 sig_final = parameters[Ifree][S]
+                print(sig_init, sig_final)
                 G = np.abs(sig_init - sig_final) < 1.
                 
                 if G.any():
                     log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
+                    #pdb.set_trace()
                     initial_guesses[S[G]] *= 0.9
                 else:
                     break
@@ -476,7 +495,7 @@ def drop_params(parameters, emfit, linemodel, Ifree):
     #          forbidden lines!
 
         
-def fit_emlines(datadir='.', fast=False, start=0, ntargets=None):
+def fit_emlines(datadir='.', fast=False, start=0, ntargets=None, makeplot=False):
     """Use the current (main) version of the emission-line fitting code.
 
     """
@@ -618,6 +637,8 @@ def fit_emlines(datadir='.', fast=False, start=0, ntargets=None):
                         fit_broad[Bbroad]['linename'][-2], broadsnr[-2], fit_broad[Bbroad]['linename'][-1], broadsnr[-1])
     
                 if dchi2test and sigtest1 and sigtest2 and broadsnrtest:
+                    if makeplot:
+                        B = True
                     log.info('Adopting broad-line model:')
                     log.info('  delta-chi2={:.1f} > delta-ndof={:.0f}'.format(delta_linechi2_balmer, delta_linendof_balmer))
                     log.info('  sigma_broad={:.1f} km/s, sigma_narrow={:.1f} km/s'.format(fit_broad[Habroad]['value'][0], fit_broad[Hanarrow]['value'][0]))
@@ -625,6 +646,8 @@ def fit_emlines(datadir='.', fast=False, start=0, ntargets=None):
                         log.info('  {} > {:.0f}'.format(_broadsnr, EMFit.minsnr_balmer_broad))
                     finalfit, finalmodel, finalchi2 = fit_broad, model_broad, chi2_broad
                 else:
+                    if makeplot:
+                        B = False
                     if dchi2test == False:
                         log.info('Dropping broad-line model: delta-chi2={:.1f} < delta-ndof={:.0f}'.format(
                             delta_linechi2_balmer, delta_linendof_balmer))
@@ -644,7 +667,39 @@ def fit_emlines(datadir='.', fast=False, start=0, ntargets=None):
 
 
         # write out...
-    
+        if makeplot:
+            from fastspecfit.util import ivar2var
+            print(data['uniqueid'])
+            for param in ['halpha_amp', 'oiii_5007_amp', 'oii_3729_amp', 'halpha_sigma', 'oiii_5007_sigma', 'oii_3729_sigma']:
+                if 'amp' in param:
+                    key = 'obsvalue'
+                else:
+                    key = 'value'
+                print(f"{param:25} {finalfit[finalfit['param_name'] == param][key][0]:.4f}")
+
+            if B:
+                for param in ['halpha_broad_amp', 'halpha_broad_sigma']:
+                    if 'amp' in param:
+                        key = 'obsvalue'
+                    else:
+                        key = 'value'
+                    print(f"{param:25} {finalfit[finalfit['param_name'] == param][key][0]:.4f}")
+
+            emlinevar, _ = ivar2var(np.hstack(data['ivar']), clip=1e-3)
+            emlinesigma = np.sqrt(emlinevar)
+
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(1, 3, figsize=(10, 4))
+            for xx, ww in zip(ax, [(3727-30, 3727+30), (4959-30, 5007+30), (6563-30, 6563+30)]):
+                I = (emlinewave > ww[0]*(1.+redshift)) * (emlinewave < ww[1]*(1.+redshift))
+                xx.fill_between(emlinewave[I], emlineflux[I]-emlinesigma[I], emlineflux[I]+emlinesigma[I], label='data', color='gray')
+                xx.plot(emlinewave[I], finalmodel[I], label='model', ls='-', lw=1, alpha=0.7, color='red')
+                #plt.plot(emlinewave[I], model_nobroad[I], label='narrow', ls='--', lw=3, alpha=0.7, color='k')
+                #plt.plot(emlinewave[I], model_broad[I], label='broad+narrow', ls='--', lw=3, alpha=0.7, color='r')
+                #xx.legend()
+            fig.suptitle(data['uniqueid'])
+            fig.tight_layout()
+            fig.savefig('fit.png')
 
 
 def main():
@@ -655,6 +710,7 @@ def main():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--fast', action='store_true', help='Build the refactored, fast emission-line fitting code.')
+    parser.add_argument('--makeplot', action='store_true', help='Build a simple plot centered on Halpha.')
     parser.add_argument('--datadir', type=str, default="./data", help='I/O directory.')
     parser.add_argument('--start', type=int, default=0, help='For testing, test on ntargets objects.')
     parser.add_argument('--ntargets', type=int, default=None, help='For testing, test on ntargets objects.')
@@ -665,7 +721,8 @@ def main():
     os.environ["MKL_NUM_THREADS"]      = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     
-    fit_emlines(datadir=args.datadir, fast=args.fast, start=args.start, ntargets=args.ntargets)
+    fit_emlines(datadir=args.datadir, fast=args.fast, start=args.start, ntargets=args.ntargets,
+                makeplot=args.makeplot)
         
 
 if __name__ == '__main__':
