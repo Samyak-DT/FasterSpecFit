@@ -243,38 +243,20 @@ def emfit_optimize_fast(emfit, linemodel,
     if len(Ifree) == 0:
         fit_info = {'nfev': 0, 'status': 0}
     else:
-        FIT_TRIES = 2
-        for fit_try in range(FIT_TRIES):
-            try:
-                fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
-                                         xtol=1e-10, ftol=1e-5, #x_scale='jac' gtol=1e-10,
-                                         tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
-                                         method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
-                parameters[Ifree] = fit_info.x
-            except:
-                if emfit.uniqueid:
-                    errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
-                else:
-                    errmsg = 'Problem in scipy.optimize.least_squares.'
+        try:
+            fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
+                                     xtol=1e-10, ftol=1e-5, #x_scale='jac' gtol=1e-10,
+                                     tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
+                                     method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
+            parameters[Ifree] = fit_info.x
+        except:
+            if emfit.uniqueid:
+                errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
+            else:
+                errmsg = 'Problem in scipy.optimize.least_squares.'
                 log.critical(errmsg)
                 raise RuntimeError(errmsg)
-            
-            if fit_try < FIT_TRIES - 1:
-                # If the narrow-line sigma didn't change by more than ~one km/s from
-                # its initial guess, then something has gone awry, so perturb the
-                # initial guess by 10% and try again. Examples where this matters:
-                #   fuji-sv3-bright-28119-39628390055022140
-                #   fuji-sv3-dark-25960-1092092734472204
-                S = np.where(emfit.sigma_param_bool[Ifree] * (linemodel['isbroad'][Ifree] == False))[0]
-                sig_init = initial_guesses[S]
-                sig_final = parameters[Ifree][S]
-                G = np.abs(sig_init - sig_final) < 1.
-                
-                if G.any():
-                    log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
-                    initial_guesses[S[G]] *= 0.9
-                else:
-                    break
+    
             
     t1 = time.time()
     
@@ -370,43 +352,21 @@ def emfit_optimize_orig(emfit, linemodel,
     
     if len(Ifree) == 0:
         fit_info = {'nfev': 0, 'status': 0}
-    else:
-        
-        FIT_TRIES = 1
-        for fit_try in range(FIT_TRIES):
-            try:
-                fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
-                                         xtol=1e-10, ftol=1e-5, #x_scale='jac' gtol=1e-10,
-                                         tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
-                                         method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
-                parameters[Ifree] = fit_info.x
-            except:
-                if emfit.uniqueid:
-                    errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
-                else:
-                    errmsg = 'Problem in scipy.optimize.least_squares.'
+    else:    
+        try:
+            fit_info = least_squares(objective, initial_guesses, jac=jac, args=farg, max_nfev=5000, 
+                                     xtol=1e-10, ftol=1e-5, #x_scale='jac' gtol=1e-10,
+                                     tr_solver='lsmr', tr_options={'maxiter': 1000, 'regularize': True},
+                                     method='trf', bounds=tuple(zip(*bounds)),) # verbose=2)
+            parameters[Ifree] = fit_info.x
+        except:
+            if emfit.uniqueid:
+                errmsg = f'Problem in scipy.optimize.least_squares for {emfit.uniqueid}.'
+            else:
+                errmsg = 'Problem in scipy.optimize.least_squares.'
                 log.critical(errmsg)
-                raise RuntimeError(errmsg)
-            
-            #if fit_try < FIT_TRIES - 1:
-            #    # If the narrow-line sigma didn't change by more than ~one km/s from
-            #    # its initial guess, then something has gone awry, so perturb the
-            #    # initial guess by 10% and try again. Examples where this matters:
-            #    #   fuji-sv3-bright-28119-39628390055022140
-            #    #   fuji-sv3-dark-25960-1092092734472204
-            #    S = np.where(emfit.sigma_param_bool[Ifree] * (linemodel['isbroad'][Ifree] == False))[0]
-            #    sig_init = initial_guesses[S]
-            #    sig_final = parameters[Ifree][S]
-            #    print(sig_init, sig_final)
-            #    G = np.abs(sig_init - sig_final) < 1.
-            #    
-            #    if G.any():
-            #        log.warning(f'Poor convergence on line-sigma for {emfit.uniqueid}; perturbing initial guess and refitting.')
-            #        #pdb.set_trace()
-            #        initial_guesses[S[G]] *= 0.9
-            #    else:
-            #        break
-            
+            raise RuntimeError(errmsg)
+    
     t1 = time.time()
     
     # drop (zero out) any dubious free parameters
