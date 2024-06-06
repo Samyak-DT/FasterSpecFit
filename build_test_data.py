@@ -21,16 +21,17 @@ def build_test_data(datadir='./', ntargets=None):
     from desiutil.log import get_logger, INFO
     log = get_logger(INFO)
 
-    out_coaddfile = os.path.join(datadir, 'coadd-test-data2.fits')
-    out_redrockfile = os.path.join(datadir, 'redrock-test-data2.fits')
-    out_fastfile = os.path.join(datadir, 'fastspec-test-data2.fits')
+    specprod, coadd_type = 'iron', 'healpix'
+    survey, program, healpix, targetid = 'sv1', 'bright', 5060, None
+    #survey, program, healpix, targetid = 'sv3', 'bright', 28119, 39628390055022140
+    #survey, program, healpix, targetid = 'sv3', 'dark', 25960, 1092092734472204
+                
+    out_coaddfile = os.path.join(datadir, f'coadd-{survey}-{program}-{healpix}.fits')
+    out_redrockfile = os.path.join(datadir, f'redrock-{survey}-{program}-{healpix}.fits')
+    out_fastfile = os.path.join(datadir, f'fastspec-{survey}-{program}-{healpix}.fits')
     if os.path.isfile(out_coaddfile):
         log.info(f'Warning: overwriting existing output file {out_coaddfile}')
 
-    # select spectra with strong line-emission and no broad lines (for now)
-    specprod, coadd_type = 'iron', 'healpix'
-    survey, program, healpix = 'sv1', 'bright', 5060
-    
     coaddfile = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, coadd_type, survey, program,
                              str(healpix//100), str(healpix), f'coadd-{survey}-{program}-{healpix}.fits')
     redrockfile = replace_prefix(coaddfile, 'coadd', 'redrock')
@@ -45,6 +46,10 @@ def build_test_data(datadir='./', ntargets=None):
                      (fast['HALPHA_BROAD_FLUX_IVAR'] == 0.) * (meta['Z'] == meta['Z_RR']))[0]
     else:
         I = np.arange(len(fast))
+
+    if targetid is not None:
+        I = np.where(fast['TARGETID'] == targetid)[0]
+        
     if ntargets is not None and ntargets <= len(I):
         I = I[:ntargets]
     nobj = len(I)
@@ -60,7 +65,10 @@ def build_test_data(datadir='./', ntargets=None):
 
     modelwave = hdr['CRVAL1'] + np.arange(hdr['NAXIS1']) * hdr['CDELT1']
     models = np.squeeze(models[I, :, :])
-    continuum = np.squeeze(models[:, 0, :] + models[:, 1, :])
+    if nobj == 1:
+        continuum = np.squeeze(models[0, :] + models[1, :])
+    else:
+        continuum = np.squeeze(models[:, 0, :] + models[:, 1, :])
 
     # read the original data (spectra) and redshifts of the selected targets
     spec = read_spectra(coaddfile).select(targets=targetids)
@@ -83,11 +91,16 @@ def build_test_data(datadir='./', ntargets=None):
     for iobj in range(nobj):
         for cam in spec.bands:
             mw_transmission_spec = dust_transmission(spec.wave[cam], meta[iobj]['EBV'])
-            spec.flux[cam][iobj, :] /= mw_transmission_spec
-            spec.ivar[cam][iobj, :] *= mw_transmission_spec**2
-
-            # this isn't quite right but shouldn't matter for these tests
-            spec.flux[cam][iobj, :] -= np.interp(spec.wave[cam], modelwave, continuum[iobj, :])
+            if nobj == 1:
+                spec.flux[cam] /= mw_transmission_spec
+                spec.ivar[cam] *= mw_transmission_spec**2
+                # this isn't quite right but shouldn't matter for these tests
+                spec.flux[cam] -= np.interp(spec.wave[cam], modelwave, continuum)
+            else:
+                spec.flux[cam][iobj, :] /= mw_transmission_spec
+                spec.ivar[cam][iobj, :] *= mw_transmission_spec**2
+                # this isn't quite right but shouldn't matter for these tests
+                spec.flux[cam][iobj, :] -= np.interp(spec.wave[cam], modelwave, continuum[iobj, :])
 
     # write out
     log.info(f'Writing {len(targetids)} targets to {out_coaddfile}')
