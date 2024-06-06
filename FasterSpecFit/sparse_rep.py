@@ -31,7 +31,13 @@ class ResMatrix(object):
     
     def matvec(self, v, w):
         self._matvec(self.data, v, w)
-        
+
+    # for compatibility
+    def dot(self, v):
+        w = np.empty(self.data.shape[0])
+        self.matvec(v, w)
+        return w
+    
     #
     # _from_dia_matrix()
     # Convert a diagonally sparse matrix M in the form

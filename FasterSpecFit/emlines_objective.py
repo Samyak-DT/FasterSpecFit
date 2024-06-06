@@ -319,6 +319,48 @@ def emline_model_core(line_wavelength,
 ##################################################################################
 
 #
+# compatibility entry point to compute modeled fluxes
+# (FIXME: we should merge most of this code with the copy in objective())
+#
+def build_model(redshift,
+                line_amplitudes,
+                line_vshifts,
+                line_sigmas,
+                line_wavelengths,
+                obs_bin_centers,
+                resolution_matrices,
+                camerapix):
+    
+    log_obs_bin_edges, ibin_widths = prepare_bins(obs_bin_centers, camerapix)
+
+    # below here is common code with objective()
+    model_fluxes = np.empty_like(obs_bin_centers, dtype=obs_bin_centers.dtype)
+    
+    for icam, campix in enumerate(camerapix):
+        
+        # start and end for obs fluxes of camera icam
+        s, e = campix
+        
+        # Actual bin widths are in ibw[1..e-s].
+        # Setup guarantees that ibw[0] and
+        # ibw[e-s+1] are dummy values
+        ibw = ibin_widths[s:e+2]
+        
+        mf = emline_model(line_wavelengths,
+                          line_amplitudes, line_vshifts, line_sigmas,
+                          log_obs_bin_edges[s+icam:e+icam+1],
+                          redshift,
+                          ibw)
+        
+        # convolve model with resolution matrix and store in
+        # this camera's subrange of model_fluxes
+        resolution_matrices[icam].matvec(mf, model_fluxes[s:e])
+        
+    return model_fluxes
+
+
+    
+#
 # find_peak_amplitudes()
 # Given fitted parameters for all emission lines, report for
 # each line the largest flux that it contributes to any
@@ -781,7 +823,7 @@ def prepare_bins(centers, camerapix):
     edges = np.empty(len(centers) + ncameras, dtype=centers.dtype)
     
     for icam, campix in enumerate(camerapix):
-
+        
         s, e = campix
         icenters = centers[s:e]
         
